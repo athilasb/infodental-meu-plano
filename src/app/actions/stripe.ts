@@ -51,14 +51,28 @@ export async function getCustomerData() {
         current_period_start: (subscription as any).current_period_start,
         cancel_at_period_end: (subscription as any).cancel_at_period_end,
         discount: (subscription as any).discount,
-        items: (subscription as any).items.data.map((item: any) => ({
-          id: item.id,
-          price: {
-            id: item.price.id,
-            unit_amount: item.price.unit_amount,
-            recurring: item.price.recurring,
-          },
-          quantity: item.quantity,
+        items: await Promise.all((subscription as any).items.data.map(async (item: any) => {
+          // Buscar informações do produto para obter metadata
+          const price = await stripe.prices.retrieve(item.price.id, {
+            expand: ['product']
+          });
+          const product = price.product as any;
+
+          return {
+            id: item.id,
+            price: {
+              id: item.price.id,
+              unit_amount: item.price.unit_amount,
+              recurring: item.price.recurring,
+              metadata: price.metadata,
+            },
+            product: {
+              id: product.id,
+              name: product.name,
+              metadata: product.metadata,
+            },
+            quantity: item.quantity,
+          };
         })),
       } : null,
       paymentMethods: paymentMethods.data.map(pm => ({

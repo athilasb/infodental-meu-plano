@@ -343,6 +343,12 @@ interface CurrentPlanData {
           interval: string;
           interval_count: number;
         } | null;
+        metadata?: any;
+      };
+      product?: {
+        id: string;
+        name: string;
+        metadata?: any;
       };
       quantity: number | null;
     }[];
@@ -724,11 +730,47 @@ export default function MeuPlano() {
     // Se temos dados reais da subscription do Stripe, calcular a partir deles
     if (currentPlan?.subscription?.items) {
       let total = 0;
+      let planTotal = 0;
+      let whatsTotal = 0;
+      let iaTotal = 0;
+      let birdTotal = 0;
+      let storageTotal = 0;
+      let storageTotalGB = 0;
 
       for (const item of currentPlan.subscription.items) {
         const amount = (item.price.unit_amount || 0) / 100; // Converter de centavos para reais
         const quantity = item.quantity || 1;
-        total += amount * quantity;
+        const itemTotal = amount * quantity;
+        total += itemTotal;
+
+        // Classificar por tipo baseado no metadata do produto
+        const itemType = item.product?.metadata?.type || item.price?.metadata?.type;
+
+        switch (itemType) {
+          case 'plan':
+            planTotal += itemTotal;
+            break;
+          case 'whatsapp':
+            whatsTotal += itemTotal;
+            break;
+          case 'ia':
+            iaTotal += itemTotal;
+            break;
+          case 'birdid':
+            birdTotal += itemTotal;
+            break;
+          case 'storage':
+            storageTotal += itemTotal;
+            // Calcular GB de storage baseado na quantidade
+            const gbPerUnit = item.product?.metadata?.gb_per_unit || item.price?.metadata?.gb_per_unit || 0;
+            storageTotalGB += parseFloat(gbPerUnit) * quantity;
+            break;
+          default:
+            // Se não tem tipo definido, assume que o primeiro item é o plano
+            if (item === currentPlan.subscription.items[0]) {
+              planTotal += itemTotal;
+            }
+        }
       }
 
       // Aplicar desconto se houver cupom (apenas no plano principal)
@@ -737,27 +779,22 @@ export default function MeuPlano() {
 
       const subscription = currentPlan.subscription as any;
       if (subscription.discount?.coupon?.percent_off) {
-        // Calcular desconto apenas no primeiro item (plano principal)
-        const mainPlanItem = currentPlan.subscription.items[0];
-        if (mainPlanItem) {
-          const mainPlanAmount = (mainPlanItem.price.unit_amount || 0) / 100;
-          const mainPlanQuantity = mainPlanItem.quantity || 1;
-          const mainPlanTotal = mainPlanAmount * mainPlanQuantity;
-          discount = mainPlanTotal * (subscription.discount.coupon.percent_off / 100);
-          totalWithDiscount = total - discount;
-        }
+        discount = planTotal * (subscription.discount.coupon.percent_off / 100);
+        totalWithDiscount = total - discount;
+        // Subtrair o desconto do valor do plano
+        planTotal -= discount;
       }
 
       return {
-        plan: 0,
-        whats: 0,
-        ia: 0,
-        bird: 0,
-        storage: 0,
+        plan: planTotal,
+        whats: whatsTotal,
+        ia: iaTotal,
+        bird: birdTotal,
+        storage: storageTotal,
         total: total,
         discount: discount,
         totalWithDiscount: totalWithDiscount,
-        storageGB: 0,
+        storageGB: storageTotalGB,
       };
     }
 
