@@ -1,4 +1,0 @@
-{
-  "/api/stripe/payment-methods/route": "app/api/stripe/payment-methods/route.js",
-  "/meuplano/page": "app/meuplano/page.js"
-}
