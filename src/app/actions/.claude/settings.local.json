@@ -4,7 +4,9 @@
       "Read(//c/Users/User/Desktop/codigo/infodental/feat/infodental-meu-plano/src/app/meuplano/**)",
       "Read(//c/Users/User/Desktop/codigo/infodental/feat/infodental-meu-plano/**)",
       "WebFetch(domain:docs.stripe.com)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(dir:*)",
+      "Bash(findstr:*)"
     ],
     "deny": [],
     "ask": []

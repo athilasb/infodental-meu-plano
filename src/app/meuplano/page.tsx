@@ -541,13 +541,10 @@ export default function MeuPlano() {
   useEffect(() => {
     async function loadCurrentPlan() {
       try {
-        console.log('🔄 Cliente: Chamando getCurrentPlan...');
         const data = await getCurrentPlan();
-        console.log('✅ Cliente: getCurrentPlan retornou:', data);
-        console.log('📅 Cliente: current_period_end recebido:', data?.subscription?.current_period_end);
         setCurrentPlan(data);
       } catch (error) {
-        console.error('❌ Cliente: Erro ao carregar plano atual:', error);
+        console.error('Erro ao carregar plano atual:', error);
       } finally {
         setLoadingPlan(false);
       }
@@ -1777,12 +1774,19 @@ export default function MeuPlano() {
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
                 <div>
                   <h2 className="text-base sm:text-lg font-semibold">Armazenamento</h2>
-                  {currentPlan?.subscription ? (
+                  {loadingPlan ? (
+                    <div className="bg-gray-200 w-64 h-4 rounded mt-1" style={{animation: 'none'}}></div>
+                  ) : currentPlan?.subscription ? (
                     (() => {
                       // Buscar o item de storage na subscription
                       const storageProductId = 'prod_T9AfZhzca9pgNW';
                       const storageItem = currentPlan.subscription.items.find(
-                        (item: any) => item.price.product === storageProductId
+                        (item: any) => {
+                          const productId = typeof item.price.product === 'string'
+                            ? item.price.product
+                            : item.price.product?.id;
+                          return productId === storageProductId;
+                        }
                       );
 
                       if (storageItem) {
@@ -2198,7 +2202,12 @@ export default function MeuPlano() {
                       // Verificar se este é o plano atual
                       const storageProductId = 'prod_T9AfZhzca9pgNW';
                       const currentStorageItem = currentPlan?.subscription?.items.find(
-                        (item: any) => item.price.product === storageProductId
+                        (item: any) => {
+                          const productId = typeof item.price.product === 'string'
+                            ? item.price.product
+                            : item.price.product?.id;
+                          return productId === storageProductId;
+                        }
                       );
                       const isCurrentPlan = (currentStorageItem as any)?.price.id === price.id;
 

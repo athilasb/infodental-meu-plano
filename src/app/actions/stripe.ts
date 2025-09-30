@@ -371,7 +371,7 @@ export async function getCurrentPlan() {
 
       // Get subscription with expanded details
       subscription = await stripe.subscriptions.retrieve(sub.id, {
-        expand: ['items.data.price', 'default_payment_method', 'discount.coupon'],
+        expand: ['items.data.price', 'default_payment_method', 'discounts'],
       });
 
       // Now get product details for each item
@@ -388,22 +388,6 @@ export async function getCurrentPlan() {
     // A próxima cobrança está em subscription.items.data[0].current_period_end
     // Esse campo já contém o timestamp Unix em segundos da próxima cobrança
     const nextBillingDate = subscription?.items?.data?.[0]?.current_period_end || null;
-
-    console.log('\n=== DEBUG SUBSCRIPTION ===');
-    console.log('🔍 subscription existe?', !!subscription);
-    if (subscription) {
-      console.log('📦 Subscription ID:', subscription.id);
-      console.log('📦 Status:', subscription.status);
-      console.log('📦 current_period_end (RAW):', subscription.current_period_end);
-      console.log('📦 current_period_end (TYPE):', typeof subscription.current_period_end);
-      console.log('📦 current_period_end (data):', subscription.current_period_end ? new Date(subscription.current_period_end * 1000).toLocaleDateString('pt-BR') : 'N/A');
-      console.log('📦 current_period_start:', subscription.current_period_start);
-      console.log('📦 nextBillingDate:', nextBillingDate);
-      console.log('📦 Subscription COMPLETA:', JSON.stringify(subscription, null, 2));
-    } else {
-      console.log('❌ Nenhuma subscription encontrada');
-    }
-    console.log('=== FIM DEBUG ===\n');
 
     return {
       product: {
@@ -426,7 +410,53 @@ export async function getCurrentPlan() {
         current_period_end: nextBillingDate, // Timestamp Unix em segundos
         current_period_start: subscription.items?.data?.[0]?.current_period_start || null,
         cancel_at_period_end: subscription.cancel_at_period_end,
-        discount: (subscription as any).discount,
+        discount: (() => {
+          const discounts = (subscription as any).discounts;
+          if (!discounts || discounts.length === 0) return null;
+
+          const discount = discounts[0]; // Pegar o primeiro desconto
+          if (!discount.coupon) return null;
+
+          return {
+            coupon: {
+              id: discount.coupon.id,
+              name: discount.coupon.name,
+              percent_off: discount.coupon.percent_off,
+              amount_off: discount.coupon.amount_off,
+              currency: discount.coupon.currency,
+              duration: discount.coupon.duration,
+              duration_in_months: discount.coupon.duration_in_months,
+            },
+            // Calcular valores com desconto
+            originalAmount: subscription.items.data.reduce((sum: number, item: any) => {
+              return sum + (item.price.unit_amount || 0) * (item.quantity || 1);
+            }, 0),
+            discountAmount: (() => {
+              const total = subscription.items.data.reduce((sum: number, item: any) => {
+                return sum + (item.price.unit_amount || 0) * (item.quantity || 1);
+              }, 0);
+              const coupon = discount.coupon;
+              if (coupon.percent_off) {
+                return Math.round((total * coupon.percent_off) / 100);
+              } else if (coupon.amount_off) {
+                return coupon.amount_off;
+              }
+              return 0;
+            })(),
+            finalAmount: (() => {
+              const total = subscription.items.data.reduce((sum: number, item: any) => {
+                return sum + (item.price.unit_amount || 0) * (item.quantity || 1);
+              }, 0);
+              const coupon = discount.coupon;
+              if (coupon.percent_off) {
+                return total - Math.round((total * coupon.percent_off) / 100);
+              } else if (coupon.amount_off) {
+                return Math.max(0, total - coupon.amount_off);
+              }
+              return total;
+            })(),
+          };
+        })(),
         items: subscription.items.data.map((item: any) => ({
           id: item.id,
           price: {
