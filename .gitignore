@@ -1,0 +1,6 @@
+.vscode/sftp.json 
+.vscode/
+next/.next/
+next/node_modules/
+__MACOSX/
+node_modules

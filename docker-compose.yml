@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  next-app:
+    build: .
+    ports:
+      - "3001:3001"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - HOSTNAME=0.0.0.0
+    command: npm run dev -- -H 0.0.0.0
