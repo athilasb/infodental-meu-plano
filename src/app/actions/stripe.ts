@@ -354,43 +354,54 @@ export async function getCurrentPlan() {
       active: true,
     });
 
-    // Buscar subscription ativa do customer
+    // Get ALL subscriptions without deep expansion
     const subscriptions = await stripe.subscriptions.list({
       customer: customerId,
-      status: 'active',
-      limit: 1,
+      limit: 100,
     });
 
-    const subscription = subscriptions.data[0] || null;
+    // Filter to get only relevant statuses
+    let subscription = null;
+
+    for (const sub of subscriptions.data) {
+      // Only include active, trialing, past_due, or unpaid subscriptions
+      if (!['active', 'trialing', 'past_due', 'unpaid'].includes(sub.status)) {
+        continue;
+      }
+
+      // Get subscription with expanded details
+      subscription = await stripe.subscriptions.retrieve(sub.id, {
+        expand: ['items.data.price', 'default_payment_method', 'discount.coupon'],
+      });
+
+      // Now get product details for each item
+      for (const item of subscription.items.data) {
+        if (item.price.product && typeof item.price.product === 'string') {
+          item.price.product = await stripe.products.retrieve(item.price.product);
+        }
+      }
+
+      // Get the first valid subscription and break
+      break;
+    }
+
+    // A próxima cobrança está em subscription.items.data[0].current_period_end
+    // Esse campo já contém o timestamp Unix em segundos da próxima cobrança
+    const nextBillingDate = subscription?.items?.data?.[0]?.current_period_end || null;
 
     console.log('\n=== DEBUG SUBSCRIPTION ===');
-    let nextBillingDate = null;
-
+    console.log('🔍 subscription existe?', !!subscription);
     if (subscription) {
       console.log('📦 Subscription ID:', subscription.id);
       console.log('📦 Status:', subscription.status);
-      console.log('📦 current_period_end:', subscription.current_period_end);
-      console.log('📦 billing_cycle_anchor:', subscription.billing_cycle_anchor);
-
-      // Buscar a próxima invoice usando stripe.invoices.retrieveUpcoming
-      console.log('\n💰 Buscando próxima invoice via retrieveUpcoming...');
-      try {
-        const upcomingInvoice = await stripe.invoices.retrieveUpcoming({
-          customer: customerId,
-        });
-        console.log('✅ Upcoming invoice encontrada!');
-        console.log('📅 period_end:', upcomingInvoice.period_end);
-        console.log('📅 period_start:', upcomingInvoice.period_start);
-        console.log('📅 next_payment_attempt:', upcomingInvoice.next_payment_attempt);
-        console.log('📅 due_date:', upcomingInvoice.due_date);
-
-        // Usar period_end da invoice como próxima data de cobrança
-        nextBillingDate = upcomingInvoice.period_end;
-        console.log('✅ Próxima cobrança definida como:', nextBillingDate);
-      } catch (invoiceError: any) {
-        console.log('❌ Erro ao buscar upcoming invoice:', invoiceError.message);
-        console.log('❌ Stack:', invoiceError.stack);
-      }
+      console.log('📦 current_period_end (RAW):', subscription.current_period_end);
+      console.log('📦 current_period_end (TYPE):', typeof subscription.current_period_end);
+      console.log('📦 current_period_end (data):', subscription.current_period_end ? new Date(subscription.current_period_end * 1000).toLocaleDateString('pt-BR') : 'N/A');
+      console.log('📦 current_period_start:', subscription.current_period_start);
+      console.log('📦 nextBillingDate:', nextBillingDate);
+      console.log('📦 Subscription COMPLETA:', JSON.stringify(subscription, null, 2));
+    } else {
+      console.log('❌ Nenhuma subscription encontrada');
     }
     console.log('=== FIM DEBUG ===\n');
 
@@ -412,19 +423,27 @@ export async function getCurrentPlan() {
       subscription: subscription ? {
         id: subscription.id,
         status: subscription.status,
-        current_period_end: nextBillingDate ? nextBillingDate * 1000 : null, // Usar nextBillingDate da invoice, converter para ms
-        current_period_start: subscription.current_period_start,
+        current_period_end: nextBillingDate, // Timestamp Unix em segundos
+        current_period_start: subscription.items?.data?.[0]?.current_period_start || null,
         cancel_at_period_end: subscription.cancel_at_period_end,
         discount: (subscription as any).discount,
         items: subscription.items.data.map((item: any) => ({
           id: item.id,
           price: {
             id: item.price.id,
-            product: item.price.product,
+            product: typeof item.price.product === 'string' ? item.price.product : {
+              id: item.price.product.id,
+              name: item.price.product.name,
+              description: item.price.product.description,
+              metadata: item.price.product.metadata,
+            },
             unit_amount: item.price.unit_amount,
-            recurring: item.price.recurring,
+            recurring: item.price.recurring ? {
+              interval: item.price.recurring.interval,
+              interval_count: item.price.recurring.interval_count,
+            } : null,
             nickname: item.price.nickname,
-            metadata: item.price.metadata,
+            metadata: item.price.metadata || {},
           },
           quantity: item.quantity,
         })),
