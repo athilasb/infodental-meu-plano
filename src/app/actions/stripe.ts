@@ -361,7 +361,7 @@ export async function getCurrentPlan() {
     });
 
     // Filter to get only relevant statuses
-    let subscription = null;
+    let subscription: any = null;
 
     for (const sub of subscriptions.data) {
       // Only include active, trialing, past_due, or unpaid subscriptions
