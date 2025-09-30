@@ -285,7 +285,6 @@ export async function getStorageProduct() {
             interval: mainItem.price.recurring.interval,
             interval_count: mainItem.price.recurring.interval_count,
           };
-          console.log('📊 Intervalo do plano principal:', currentInterval);
         }
       }
     }
@@ -311,7 +310,6 @@ export async function getStorageProduct() {
       return isAddon;
     });
 
-    console.log(`📦 Preços de storage filtrados: ${addonPrices.length}`);
 
     return {
       product: {
@@ -520,8 +518,6 @@ export async function getUpcomingInvoice() {
 
     const upcomingInvoice = await response.json();
 
-    console.log('📄 Upcoming invoice lines:', upcomingInvoice.lines.data.length);
-
     return {
       id: upcomingInvoice.id,
       amount_due: upcomingInvoice.amount_due,
@@ -549,14 +545,6 @@ export async function getUpcomingInvoice() {
           productName = line.description.split('(')[0].trim();
         }
 
-        console.log('📦 Line item:', {
-          description: line.description,
-          productName,
-          amount: line.amount,
-          proration: line.proration,
-          period: `${new Date(line.period.start * 1000).toLocaleDateString()} - ${new Date(line.period.end * 1000).toLocaleDateString()}`
-        });
-
         return {
           id: line.id,
           description: line.description,
@@ -582,8 +570,6 @@ export async function getUpcomingInvoice() {
 
 export async function addStorageAddon(priceId: string) {
   try {
-    console.log('🔧 addStorageAddon iniciado');
-    console.log('📋 Price ID:', priceId);
 
     const customerId = process.env.STRIPE_CUSTOMER_ID;
 
@@ -591,31 +577,17 @@ export async function addStorageAddon(priceId: string) {
       throw new Error('Customer ID não configurado');
     }
 
-    console.log('👤 Customer ID:', customerId);
-
     // Buscar subscription ativa
     const subscriptions = await stripe.subscriptions.list({
       customer: customerId,
       status: 'active',
       limit: 1,
     });
-
-    console.log('📋 Subscriptions encontradas:', subscriptions.data.length);
-
     const subscription = subscriptions.data[0];
 
     if (!subscription) {
       throw new Error('Nenhuma subscription ativa encontrada');
     }
-
-    console.log('✅ Subscription ativa:', subscription.id);
-    console.log('📦 Items atuais:', subscription.items.data.map(i => ({
-      id: i.id,
-      product: i.price.product,
-      price: i.price.id,
-      nickname: i.price.nickname
-    })));
-
     // Verificar se já existe um addon de armazenamento (produto prod_T9AfZhzca9pgNW)
     const storageProductId = 'prod_T9AfZhzca9pgNW';
     const existingStorageItem = subscription.items.data.find(item => {
@@ -624,40 +596,22 @@ export async function addStorageAddon(priceId: string) {
 
     // Se já existe, remover o item antigo
     if (existingStorageItem) {
-      console.log('🗑️  Removendo item existente:', existingStorageItem.id);
       await stripe.subscriptionItems.del(existingStorageItem.id);
-      console.log('✅ Item removido');
     } else {
-      console.log('ℹ️  Nenhum item de storage existente');
     }
 
     // Verificar o intervalo do preço do addon
     const addonPrice = await stripe.prices.retrieve(priceId);
-    console.log('📊 Preço do addon:', {
-      id: addonPrice.id,
-      recurring: addonPrice.recurring
-    });
-
     // Verificar o intervalo do plano principal
     const mainItem = subscription.items.data.find(item => item.price.product !== storageProductId);
     if (mainItem) {
-      console.log('📊 Preço do plano principal:', {
-        id: mainItem.price.id,
-        recurring: mainItem.price.recurring
-      });
     }
-
-    // Adicionar o novo addon de armazenamento à subscription
-    console.log('➕ Adicionando novo item de storage...');
     const newItem = await stripe.subscriptionItems.create({
       subscription: subscription.id,
       price: priceId,
       quantity: 1,
       proration_behavior: 'create_prorations',
     });
-
-    console.log('✅ Item adicionado:', newItem.id);
-    console.log('✅ addStorageAddon concluído com sucesso');
 
     return { success: true };
   } catch (error: any) {
@@ -733,13 +687,10 @@ export async function createSubscription(priceId: string) {
     }
 
     const defaultPaymentMethod = customer.invoice_settings.default_payment_method;
-    console.log('💳 Default payment method:', defaultPaymentMethod);
 
     if (!defaultPaymentMethod) {
       throw new Error('Nenhum método de pagamento padrão configurado');
     }
-
-    console.log('🔧 Creating subscription with price:', priceId);
 
     // Criar nova subscription com cobrança imediata
     const subscription = await stripe.subscriptions.create({
@@ -749,11 +700,6 @@ export async function createSubscription(priceId: string) {
       payment_behavior: 'error_if_incomplete', // Cobra imediatamente e retorna erro se falhar
       expand: ['latest_invoice.payment_intent'],
     });
-
-    console.log('✅ Subscription created:', subscription.id);
-    console.log('📋 Subscription status:', subscription.status);
-    console.log('🧾 Latest invoice:', (subscription as any).latest_invoice?.id);
-    console.log('💰 Latest invoice status:', (subscription as any).latest_invoice?.status);
 
     return { success: true, subscriptionId: subscription.id };
   } catch (error) {
@@ -792,26 +738,15 @@ export async function updateSubscription(newPriceId: string) {
     if (!planItem) {
       throw new Error('Item do plano não encontrado na subscription');
     }
-
-    console.log('🔧 Updating subscription item:', planItem.id, 'to price:', newPriceId);
-
-    // Atualizar o item com o novo preço
     // Nota: Ao atualizar items individualmente, o Stripe aceita diferentes intervalos
     await stripe.subscriptionItems.update(planItem.id, {
       price: newPriceId,
       proration_behavior: 'create_prorations', // Cobra proporcionalmente pela mudança
     });
-
-    console.log('✅ Subscription item updated successfully');
-
     // Buscar a subscription atualizada para verificar o status
     const updatedSubscription = await stripe.subscriptions.retrieve(subscription.id, {
       expand: ['latest_invoice'],
     });
-
-    console.log('📋 Updated subscription status:', updatedSubscription.status);
-    console.log('🧾 Latest invoice:', (updatedSubscription as any).latest_invoice?.id);
-    console.log('💰 Latest invoice status:', (updatedSubscription as any).latest_invoice?.status);
 
     return { success: true };
   } catch (error) {
