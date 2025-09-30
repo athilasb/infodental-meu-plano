@@ -1309,8 +1309,11 @@ export default function MeuPlano() {
                             : 'Data não disponível'}
                         </span>
                       </div>
+                    </div>
+                    {/* Seção de cupom - sempre visível */}
+                    <div className="mt-3">
                       {(currentPlan.subscription as any).discount?.coupon ? (
-                        <div className="mt-2 flex items-center gap-2">
+                        <div className="flex items-center gap-2">
                           <div className="inline-flex items-center gap-1.5 rounded-lg bg-green-50 border border-green-200 px-2.5 py-1.5">
                             <Icon icon="mdi:ticket-percent" className="text-green-600" width={16} />
                             <span className="text-xs font-semibold text-green-800">
@@ -1322,30 +1325,34 @@ export default function MeuPlano() {
                               </span>
                             )}
                           </div>
-                          <button
-                            onClick={clearCoupon}
-                            className="text-xs text-red-600 hover:text-red-800 font-medium underline transition-colors"
-                          >
-                            Remover
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="mt-2">
-                          <div className="flex gap-2 items-center max-w-md">
-                            <Input
-                              placeholder="Digite o código do cupom"
-                              value={couponInput}
-                              onChange={(e) => setCouponInput(e.target.value)}
-                              className="text-xs"
-                            />
-                            <Button onClick={applyCoupon} variant="secondary" size="sm">
-                              Aplicar
-                            </Button>
-                          </div>
-                          {couponError && (
-                            <div className="mt-1 text-xs text-rose-600">{couponError}</div>
+                          {!(currentPlan?.subscription as any)?.cancel_at_period_end && (
+                            <button
+                              onClick={clearCoupon}
+                              className="text-xs text-red-600 hover:text-red-800 font-medium underline transition-colors"
+                            >
+                              Remover
+                            </button>
                           )}
                         </div>
+                      ) : (
+                        !((currentPlan?.subscription as any)?.cancel_at_period_end) && (
+                          <div>
+                            <div className="flex gap-2 items-center max-w-md">
+                              <Input
+                                placeholder="Digite o código do cupom"
+                                value={couponInput}
+                                onChange={(e) => setCouponInput(e.target.value)}
+                                className="text-xs"
+                              />
+                              <Button onClick={applyCoupon} variant="secondary" size="sm">
+                                Aplicar
+                              </Button>
+                            </div>
+                            {couponError && (
+                              <div className="mt-1 text-xs text-rose-600">{couponError}</div>
+                            )}
+                          </div>
+                        )
                       )}
                     </div>
                   </div>
