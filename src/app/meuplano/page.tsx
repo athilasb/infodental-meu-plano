@@ -541,10 +541,13 @@ export default function MeuPlano() {
   useEffect(() => {
     async function loadCurrentPlan() {
       try {
+        console.log('🔄 Cliente: Chamando getCurrentPlan...');
         const data = await getCurrentPlan();
+        console.log('✅ Cliente: getCurrentPlan retornou:', data);
+        console.log('📅 Cliente: current_period_end recebido:', data?.subscription?.current_period_end);
         setCurrentPlan(data);
       } catch (error) {
-        console.error('Erro ao carregar plano atual:', error);
+        console.error('❌ Cliente: Erro ao carregar plano atual:', error);
       } finally {
         setLoadingPlan(false);
       }
@@ -1301,7 +1304,9 @@ export default function MeuPlano() {
                       <div className="text-sm">
                         <span className="text-neutral-500">Próxima cobrança:</span>{" "}
                         <span className="font-medium">
-                          {fmtDate(new Date(currentPlan.subscription.current_period_end * 1000))}
+                          {currentPlan.subscription.current_period_end
+                            ? fmtDate(new Date(currentPlan.subscription.current_period_end * 1000))
+                            : 'Data não disponível'}
                         </span>
                       </div>
                       {(currentPlan.subscription as any).discount?.coupon ? (
@@ -1519,7 +1524,9 @@ export default function MeuPlano() {
                               <div className="flex-1">
                                 <p className="text-xs font-semibold text-amber-800 mb-1">Plano cancelado</p>
                                 <p className="text-xs text-amber-700">
-                                  Acesso até {fmtDate(new Date(currentPlan.subscription.current_period_end * 1000))}
+                                  Acesso até {currentPlan.subscription.current_period_end
+                                    ? fmtDate(new Date(currentPlan.subscription.current_period_end * 1000))
+                                    : 'Data não disponível'}
                                 </p>
                               </div>
                             </div>
@@ -1809,7 +1816,7 @@ export default function MeuPlano() {
           <section className="space-y-3">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
               <h2 className="text-base sm:text-lg font-semibold">Histórico de Faturas</h2>
-              {currentPlan?.subscription && (
+              {currentPlan?.subscription && currentPlan.subscription.current_period_end && (
                 <div className="text-sm text-neutral-600">
                   Próxima cobrança: {fmtDate(new Date(currentPlan.subscription.current_period_end * 1000))}
                 </div>

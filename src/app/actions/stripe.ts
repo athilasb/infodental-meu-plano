@@ -48,6 +48,7 @@ export async function getCustomerData() {
         id: subscription.id,
         status: subscription.status,
         current_period_end: (subscription as any).current_period_end,
+        current_period_start: (subscription as any).current_period_start,
         cancel_at_period_end: (subscription as any).cancel_at_period_end,
         discount: (subscription as any).discount,
         items: (subscription as any).items.data.map((item: any) => ({
@@ -267,7 +268,7 @@ export async function getStorageProduct() {
     let currentInterval: { interval: string; interval_count: number } | null = null;
     if (customerId) {
       const subscriptions = await stripe.subscriptions.list({
-        customer: customerId,
+        customer: customerId,//Subscription objeto complet
         status: 'active',
         limit: 1,
       });
@@ -362,6 +363,37 @@ export async function getCurrentPlan() {
 
     const subscription = subscriptions.data[0] || null;
 
+    console.log('\n=== DEBUG SUBSCRIPTION ===');
+    let nextBillingDate = null;
+
+    if (subscription) {
+      console.log('📦 Subscription ID:', subscription.id);
+      console.log('📦 Status:', subscription.status);
+      console.log('📦 current_period_end:', subscription.current_period_end);
+      console.log('📦 billing_cycle_anchor:', subscription.billing_cycle_anchor);
+
+      // Buscar a próxima invoice usando stripe.invoices.retrieveUpcoming
+      console.log('\n💰 Buscando próxima invoice via retrieveUpcoming...');
+      try {
+        const upcomingInvoice = await stripe.invoices.retrieveUpcoming({
+          customer: customerId,
+        });
+        console.log('✅ Upcoming invoice encontrada!');
+        console.log('📅 period_end:', upcomingInvoice.period_end);
+        console.log('📅 period_start:', upcomingInvoice.period_start);
+        console.log('📅 next_payment_attempt:', upcomingInvoice.next_payment_attempt);
+        console.log('📅 due_date:', upcomingInvoice.due_date);
+
+        // Usar period_end da invoice como próxima data de cobrança
+        nextBillingDate = upcomingInvoice.period_end;
+        console.log('✅ Próxima cobrança definida como:', nextBillingDate);
+      } catch (invoiceError: any) {
+        console.log('❌ Erro ao buscar upcoming invoice:', invoiceError.message);
+        console.log('❌ Stack:', invoiceError.stack);
+      }
+    }
+    console.log('=== FIM DEBUG ===\n');
+
     return {
       product: {
         id: product.id,
@@ -380,10 +412,11 @@ export async function getCurrentPlan() {
       subscription: subscription ? {
         id: subscription.id,
         status: subscription.status,
-        current_period_end: (subscription as any).current_period_end,
-        cancel_at_period_end: (subscription as any).cancel_at_period_end,
+        current_period_end: nextBillingDate ? nextBillingDate * 1000 : null, // Usar nextBillingDate da invoice, converter para ms
+        current_period_start: subscription.current_period_start,
+        cancel_at_period_end: subscription.cancel_at_period_end,
         discount: (subscription as any).discount,
-        items: (subscription as any).items.data.map((item: any) => ({
+        items: subscription.items.data.map((item: any) => ({
           id: item.id,
           price: {
             id: item.price.id,
