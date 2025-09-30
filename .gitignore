@@ -1,6 +1,11 @@
-.vscode/sftp.json 
+.vscode/sftp.json
 .vscode/
+.next/
 next/.next/
 next/node_modules/
 __MACOSX/
 node_modules
+.env.local
+.env
+*.env
+test-coupon.js
