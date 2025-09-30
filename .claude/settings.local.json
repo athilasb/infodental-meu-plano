@@ -10,7 +10,10 @@
       "Read(//Users/kronermachadocosta/Desktop/Compartilhar Claude/**)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(git branch:*)",
+      "Bash(git checkout:*)",
+      "Bash(rm:*)"
     ],
     "deny": [],
     "ask": []
