@@ -7,7 +7,10 @@
       "Bash(xargs:*)",
       "Bash(npm run build:*)",
       "Bash(lsof:*)",
-      "Read(//Users/kronermachadocosta/Desktop/Compartilhar Claude/**)"
+      "Read(//Users/kronermachadocosta/Desktop/Compartilhar Claude/**)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ],
     "deny": [],
     "ask": []
