@@ -65,18 +65,7 @@ export function AddCardForm({ onSuccess, onCancel }: AddCardFormProps) {
           throw new Error('Erro ao adicionar método de pagamento');
         }
 
-        await Swal.fire({
-          title: 'Sucesso!',
-          text: 'Cartão adicionado com sucesso!',
-          icon: 'success',
-          confirmButtonText: 'Ok',
-          confirmButtonColor: '#10b981',
-          customClass: {
-            popup: 'rounded-2xl',
-            confirmButton: 'rounded-xl px-6 py-3 font-semibold'
-          }
-        });
-
+        // Chamar onSuccess sem mostrar alert aqui (será tratado no componente pai)
         onSuccess();
       }
     } catch (error: any) {

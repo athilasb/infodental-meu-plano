@@ -432,12 +432,15 @@ export async function getCurrentPlan() {
               return sum + (item.price.unit_amount || 0) * (item.quantity || 1);
             }, 0),
             discountAmount: (() => {
-              const total = subscription.items.data.reduce((sum: number, item: any) => {
-                return sum + (item.price.unit_amount || 0) * (item.quantity || 1);
-              }, 0);
+              // Buscar o item do plano principal (primeiro item da subscription)
+              const mainPlanItem = subscription.items.data[0];
+              if (!mainPlanItem) return 0;
+
+              const itemTotal = (mainPlanItem.price.unit_amount || 0) * (mainPlanItem.quantity || 1);
               const coupon = discount.coupon;
+
               if (coupon.percent_off) {
-                return Math.round((total * coupon.percent_off) / 100);
+                return Math.round((itemTotal * coupon.percent_off) / 100);
               } else if (coupon.amount_off) {
                 return coupon.amount_off;
               }
@@ -447,13 +450,22 @@ export async function getCurrentPlan() {
               const total = subscription.items.data.reduce((sum: number, item: any) => {
                 return sum + (item.price.unit_amount || 0) * (item.quantity || 1);
               }, 0);
+
+              // Calcular desconto apenas no plano principal
+              const mainPlanItem = subscription.items.data[0];
+              if (!mainPlanItem) return total;
+
+              const itemTotal = (mainPlanItem.price.unit_amount || 0) * (mainPlanItem.quantity || 1);
               const coupon = discount.coupon;
+              let discountAmount = 0;
+
               if (coupon.percent_off) {
-                return total - Math.round((total * coupon.percent_off) / 100);
+                discountAmount = Math.round((itemTotal * coupon.percent_off) / 100);
               } else if (coupon.amount_off) {
-                return Math.max(0, total - coupon.amount_off);
+                discountAmount = coupon.amount_off;
               }
-              return total;
+
+              return total - discountAmount;
             })(),
           };
         })(),
@@ -481,6 +493,89 @@ export async function getCurrentPlan() {
     };
   } catch (error) {
     console.error('Erro ao buscar plano atual:', error);
+    throw error;
+  }
+}
+
+export async function getUpcomingInvoice() {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      throw new Error('Customer ID não configurado');
+    }
+
+    // Buscar a próxima fatura usando fetch diretamente com expand
+    const response = await fetch(`https://api.stripe.com/v1/invoices/upcoming?customer=${customerId}&expand[]=lines.data.price.product`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${process.env.STRIPE_SECRET_KEY}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Stripe API error: ${response.statusText}`);
+    }
+
+    const upcomingInvoice = await response.json();
+
+    console.log('📄 Upcoming invoice lines:', upcomingInvoice.lines.data.length);
+
+    return {
+      id: upcomingInvoice.id,
+      amount_due: upcomingInvoice.amount_due,
+      amount_paid: upcomingInvoice.amount_paid,
+      amount_remaining: upcomingInvoice.amount_remaining,
+      subtotal: upcomingInvoice.subtotal,
+      total: upcomingInvoice.total,
+      tax: upcomingInvoice.tax,
+      total_discount_amounts: upcomingInvoice.total_discount_amounts,
+      starting_balance: upcomingInvoice.starting_balance,
+      ending_balance: upcomingInvoice.ending_balance,
+      period_start: upcomingInvoice.period_start,
+      period_end: upcomingInvoice.period_end,
+      lines: upcomingInvoice.lines.data.map((line: any) => {
+        // Extrair nome do produto
+        let productName = 'Item';
+        if (line.price?.product) {
+          if (typeof line.price.product === 'string') {
+            productName = line.price.product;
+          } else {
+            productName = line.price.product.name || 'Item';
+          }
+        } else if (line.description) {
+          // Tentar extrair nome da descrição
+          productName = line.description.split('(')[0].trim();
+        }
+
+        console.log('📦 Line item:', {
+          description: line.description,
+          productName,
+          amount: line.amount,
+          proration: line.proration,
+          period: `${new Date(line.period.start * 1000).toLocaleDateString()} - ${new Date(line.period.end * 1000).toLocaleDateString()}`
+        });
+
+        return {
+          id: line.id,
+          description: line.description,
+          productName,
+          amount: line.amount,
+          quantity: line.quantity || 1,
+          unit_amount: line.price?.unit_amount || line.amount,
+          period: {
+            start: line.period.start,
+            end: line.period.end,
+          },
+          proration: line.proration,
+          type: line.type,
+        };
+      }),
+      discounts: upcomingInvoice.discounts || [],
+    };
+  } catch (error) {
+    console.error('Erro ao buscar próxima fatura:', error);
     throw error;
   }
 }
@@ -638,18 +733,27 @@ export async function createSubscription(priceId: string) {
     }
 
     const defaultPaymentMethod = customer.invoice_settings.default_payment_method;
+    console.log('💳 Default payment method:', defaultPaymentMethod);
 
     if (!defaultPaymentMethod) {
       throw new Error('Nenhum método de pagamento padrão configurado');
     }
+
+    console.log('🔧 Creating subscription with price:', priceId);
 
     // Criar nova subscription com cobrança imediata
     const subscription = await stripe.subscriptions.create({
       customer: customerId,
       items: [{ price: priceId }],
       default_payment_method: defaultPaymentMethod as string,
-      payment_behavior: 'default_incomplete', // Tenta cobrar imediatamente
+      payment_behavior: 'error_if_incomplete', // Cobra imediatamente e retorna erro se falhar
+      expand: ['latest_invoice.payment_intent'],
     });
+
+    console.log('✅ Subscription created:', subscription.id);
+    console.log('📋 Subscription status:', subscription.status);
+    console.log('🧾 Latest invoice:', (subscription as any).latest_invoice?.id);
+    console.log('💰 Latest invoice status:', (subscription as any).latest_invoice?.status);
 
     return { success: true, subscriptionId: subscription.id };
   } catch (error) {
@@ -689,12 +793,25 @@ export async function updateSubscription(newPriceId: string) {
       throw new Error('Item do plano não encontrado na subscription');
     }
 
+    console.log('🔧 Updating subscription item:', planItem.id, 'to price:', newPriceId);
+
     // Atualizar o item com o novo preço
     // Nota: Ao atualizar items individualmente, o Stripe aceita diferentes intervalos
     await stripe.subscriptionItems.update(planItem.id, {
       price: newPriceId,
-      proration_behavior: 'create_prorations',
+      proration_behavior: 'create_prorations', // Cobra proporcionalmente pela mudança
     });
+
+    console.log('✅ Subscription item updated successfully');
+
+    // Buscar a subscription atualizada para verificar o status
+    const updatedSubscription = await stripe.subscriptions.retrieve(subscription.id, {
+      expand: ['latest_invoice'],
+    });
+
+    console.log('📋 Updated subscription status:', updatedSubscription.status);
+    console.log('🧾 Latest invoice:', (updatedSubscription as any).latest_invoice?.id);
+    console.log('💰 Latest invoice status:', (updatedSubscription as any).latest_invoice?.status);
 
     return { success: true };
   } catch (error) {

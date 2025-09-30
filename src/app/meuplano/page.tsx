@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Input, Select } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
-import { getStorageProduct, getCurrentPlan, addStorageAddon, removeStorageAddon, createSubscription, updateSubscription, cancelSubscription, reactivateSubscription, getInvoices, getCustomerData, updateCustomerData, applyCouponToSubscription, removeCouponFromSubscription } from "@/app/actions/stripe";
+import { getStorageProduct, getCurrentPlan, getUpcomingInvoice, addStorageAddon, removeStorageAddon, createSubscription, updateSubscription, cancelSubscription, reactivateSubscription, getInvoices, getCustomerData, updateCustomerData, applyCouponToSubscription, removeCouponFromSubscription } from "@/app/actions/stripe";
 import Swal from 'sweetalert2';
 import ReactSelect, { components, SingleValue } from 'react-select';
 import { Icon } from '@iconify/react';
@@ -292,6 +292,36 @@ interface StorageProductData {
   prices: StoragePrice[];
 }
 
+interface UpcomingInvoice {
+  id: string | null;
+  amount_due: number;
+  amount_paid: number;
+  amount_remaining: number;
+  subtotal: number;
+  total: number;
+  tax: number | null;
+  total_discount_amounts: any[];
+  starting_balance: number;
+  ending_balance: number | null;
+  period_start: number;
+  period_end: number;
+  lines: {
+    id: string;
+    description: string | null;
+    productName: string;
+    amount: number;
+    quantity: number | null;
+    unit_amount: number | null;
+    period: {
+      start: number;
+      end: number;
+    };
+    proration: boolean;
+    type: string;
+  }[];
+  discounts: any[];
+}
+
 interface CurrentPlanData {
   product: {
     id: string;
@@ -340,6 +370,10 @@ export default function MeuPlano() {
   // Current plan from Stripe
   const [currentPlan, setCurrentPlan] = useState<CurrentPlanData | null>(null);
   const [loadingPlan, setLoadingPlan] = useState(true);
+
+  // Upcoming invoice from Stripe
+  const [upcomingInvoice, setUpcomingInvoice] = useState<UpcomingInvoice | null>(null);
+  const [loadingUpcomingInvoice, setLoadingUpcomingInvoice] = useState(true);
 
   // Invoices from Stripe
   const [stripeInvoices, setStripeInvoices] = useState<any[]>([]);
@@ -525,9 +559,7 @@ export default function MeuPlano() {
     async function loadStorageProduct() {
       try {
         const data = await getStorageProduct();
-        console.log('📦 Storage Product carregado:', data);
-        console.log('📋 Prices:', data.prices.map(p => ({ id: p.id, nickname: p.nickname, amount: p.unit_amount })));
-        setStorageProduct(data);
+            setStorageProduct(data);
       } catch (error) {
         console.error('Erro ao carregar produto de armazenamento:', error);
       } finally {
@@ -550,6 +582,21 @@ export default function MeuPlano() {
       }
     }
     loadCurrentPlan();
+  }, []);
+
+  // Carregar próxima fatura do Stripe
+  useEffect(() => {
+    async function loadUpcomingInvoice() {
+      try {
+        const data = await getUpcomingInvoice();
+        setUpcomingInvoice(data);
+      } catch (error) {
+        console.error('Erro ao carregar próxima fatura:', error);
+      } finally {
+        setLoadingUpcomingInvoice(false);
+      }
+    }
+    loadUpcomingInvoice();
   }, []);
 
   // Carregar faturas do Stripe
@@ -684,14 +731,21 @@ export default function MeuPlano() {
         total += amount * quantity;
       }
 
-      // Aplicar desconto se houver cupom
+      // Aplicar desconto se houver cupom (apenas no plano principal)
       let discount = 0;
       let totalWithDiscount = total;
 
       const subscription = currentPlan.subscription as any;
       if (subscription.discount?.coupon?.percent_off) {
-        discount = total * (subscription.discount.coupon.percent_off / 100);
-        totalWithDiscount = total - discount;
+        // Calcular desconto apenas no primeiro item (plano principal)
+        const mainPlanItem = currentPlan.subscription.items[0];
+        if (mainPlanItem) {
+          const mainPlanAmount = (mainPlanItem.price.unit_amount || 0) / 100;
+          const mainPlanQuantity = mainPlanItem.quantity || 1;
+          const mainPlanTotal = mainPlanAmount * mainPlanQuantity;
+          discount = mainPlanTotal * (subscription.discount.coupon.percent_off / 100);
+          totalWithDiscount = total - discount;
+        }
       }
 
       return {
@@ -1040,7 +1094,7 @@ export default function MeuPlano() {
       });
 
       const response = await fetch('/api/stripe/payment-methods', {
-        method: 'PATCH',
+        method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
         },
@@ -1057,6 +1111,10 @@ export default function MeuPlano() {
       if (data.paymentMethods) {
         setPaymentMethods(data.paymentMethods);
       }
+
+      // Recarregar plano atual para atualizar método de pagamento padrão na subscription
+      const planData = await getCurrentPlan();
+      setCurrentPlan(planData);
 
       await Swal.fire({
         title: 'Sucesso!',
@@ -1310,26 +1368,31 @@ export default function MeuPlano() {
                     {/* Seção de cupom - sempre visível */}
                     <div className="mt-3">
                       {(currentPlan.subscription as any).discount?.coupon ? (
-                        <div className="flex items-center gap-2">
-                          <div className="inline-flex items-center gap-1.5 rounded-lg bg-green-50 border border-green-200 px-2.5 py-1.5">
-                            <Icon icon="mdi:ticket-percent" className="text-green-600" width={16} />
-                            <span className="text-xs font-semibold text-green-800">
-                              Cupom "{(currentPlan.subscription as any).discount.coupon.id}"
-                            </span>
-                            {(currentPlan.subscription as any).discount.coupon.percent_off && (
-                              <span className="text-xs text-green-600">
-                                ({(currentPlan.subscription as any).discount.coupon.percent_off}% OFF)
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <div className="inline-flex items-center gap-1.5 rounded-lg bg-green-50 border border-green-200 px-2.5 py-1.5">
+                              <Icon icon="mdi:ticket-percent" className="text-green-600" width={16} />
+                              <span className="text-xs font-semibold text-green-800">
+                                Cupom "{(currentPlan.subscription as any).discount.coupon.id}"
                               </span>
+                              {(currentPlan.subscription as any).discount.coupon.percent_off && (
+                                <span className="text-xs text-green-600">
+                                  ({(currentPlan.subscription as any).discount.coupon.percent_off}% OFF)
+                                </span>
+                              )}
+                            </div>
+                            {!(currentPlan?.subscription as any)?.cancel_at_period_end && (
+                              <button
+                                onClick={clearCoupon}
+                                className="text-xs text-red-600 hover:text-red-800 font-medium underline transition-colors"
+                              >
+                                Remover
+                              </button>
                             )}
                           </div>
-                          {!(currentPlan?.subscription as any)?.cancel_at_period_end && (
-                            <button
-                              onClick={clearCoupon}
-                              className="text-xs text-red-600 hover:text-red-800 font-medium underline transition-colors"
-                            >
-                              Remover
-                            </button>
-                          )}
+                          <div className="text-xs text-neutral-500 italic">
+                            Desconto aplicado no plano principal
+                          </div>
                         </div>
                       ) : (
                         !((currentPlan?.subscription as any)?.cancel_at_period_end) && (
@@ -1636,7 +1699,38 @@ export default function MeuPlano() {
                       Você ainda não possui um plano ativo. Contrate agora e aproveite todos os recursos da plataforma.
                     </p>
                     <button
-                      onClick={() => setChangePlanConfirm(true)}
+                      onClick={async () => {
+                        // Verificar se há métodos de pagamento cadastrados
+                        if (paymentMethods.length === 0) {
+                          const result = await Swal.fire({
+                            title: 'Método de pagamento necessário',
+                            html: `
+                              <div style="text-align: left; padding: 10px;">
+                                <p style="margin-bottom: 15px;">Para contratar um plano, você precisa adicionar um método de pagamento primeiro.</p>
+                                <p style="color: #6b7280; font-size: 14px;">Isso garante que sua assinatura seja ativada automaticamente.</p>
+                              </div>
+                            `,
+                            icon: 'info',
+                            showCancelButton: true,
+                            confirmButtonText: 'Adicionar método de pagamento',
+                            cancelButtonText: 'Cancelar',
+                            confirmButtonColor: '#10b981',
+                            cancelButtonColor: '#6b7280',
+                            customClass: {
+                              popup: 'rounded-2xl',
+                              confirmButton: 'rounded-xl px-6 py-3 font-semibold',
+                              cancelButton: 'rounded-xl px-6 py-3 font-semibold'
+                            }
+                          });
+
+                          if (result.isConfirmed) {
+                            setAddPaymentOpen(true);
+                            setPaymentType('card');
+                          }
+                        } else {
+                          setChangePlanConfirm(true);
+                        }
+                      }}
                       className="rounded-xl bg-krooa-green px-6 py-3 text-sm font-bold text-krooa-dark hover:shadow-lg hover:scale-105 transition-all shadow-md"
                     >
                       Contratar Plano
@@ -1768,6 +1862,7 @@ export default function MeuPlano() {
                 </table>
               </div>
             </section>
+
 
             {/* Storage */}
             <section className="rounded-2xl border border-neutral-200 bg-white p-4 sm:p-5 shadow-sm">
@@ -3117,14 +3212,77 @@ export default function MeuPlano() {
             <Elements stripe={stripePromise}>
               <AddCardForm
                 onSuccess={async () => {
-                  // Recarregar métodos de pagamento
-                  const response = await fetch('/api/stripe/payment-methods');
-                  const data = await response.json();
-                  if (data.paymentMethods) {
-                    setPaymentMethods(data.paymentMethods);
+                  try {
+                    // Recarregar métodos de pagamento
+                    const response = await fetch('/api/stripe/payment-methods');
+                    if (!response.ok) {
+                      throw new Error(`Erro ao carregar métodos de pagamento: ${response.statusText}`);
+                    }
+                    const data = await response.json();
+                    if (data.paymentMethods) {
+                      setPaymentMethods(data.paymentMethods);
+                    }
+
+                    // Recarregar plano atual para atualizar o método de pagamento padrão
+                    const planData = await getCurrentPlan();
+                    setCurrentPlan(planData);
+
+                    setAddPaymentOpen(false);
+                    setPaymentType('select');
+
+                    // Se não houver plano ativo, perguntar se quer contratar agora
+                    if (!planData?.subscription) {
+                      const result = await Swal.fire({
+                        title: 'Cartão adicionado com sucesso!',
+                        html: `
+                          <div style="text-align: left; padding: 10px;">
+                            <p style="margin-bottom: 15px;">Seu método de pagamento foi cadastrado.</p>
+                            <p style="color: #6b7280; font-size: 14px;">Deseja contratar um plano agora?</p>
+                          </div>
+                        `,
+                        icon: 'success',
+                        showCancelButton: true,
+                        confirmButtonText: 'Sim, contratar plano',
+                        cancelButtonText: 'Agora não',
+                        confirmButtonColor: '#10b981',
+                        cancelButtonColor: '#6b7280',
+                        customClass: {
+                          popup: 'rounded-2xl',
+                          confirmButton: 'rounded-xl px-6 py-3 font-semibold',
+                          cancelButton: 'rounded-xl px-6 py-3 font-semibold'
+                        }
+                      });
+
+                      if (result.isConfirmed) {
+                        setChangePlanConfirm(true);
+                      }
+                    } else {
+                      await Swal.fire({
+                        title: 'Sucesso!',
+                        text: 'Cartão adicionado com sucesso.',
+                        icon: 'success',
+                        confirmButtonText: 'Ok',
+                        confirmButtonColor: '#10b981',
+                        customClass: {
+                          popup: 'rounded-2xl',
+                          confirmButton: 'rounded-xl px-6 py-3 font-semibold'
+                        }
+                      });
+                    }
+                  } catch (error: any) {
+                    console.error('Erro ao recarregar métodos de pagamento:', error);
+                    await Swal.fire({
+                      title: 'Aviso',
+                      text: 'Cartão adicionado, mas houve um erro ao atualizar a lista. Por favor, recarregue a página.',
+                      icon: 'warning',
+                      confirmButtonText: 'Ok',
+                      confirmButtonColor: '#f59e0b',
+                      customClass: {
+                        popup: 'rounded-2xl',
+                        confirmButton: 'rounded-xl px-6 py-3 font-semibold'
+                      }
+                    });
                   }
-                  setAddPaymentOpen(false);
-                  setPaymentType('select');
                 }}
                 onCancel={() => {
                   setPaymentType('select');
