@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Input, Select } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
-import { getStorageProduct, getCurrentPlan, getUpcomingInvoice, addStorageAddon, removeStorageAddon, createSubscription, updateSubscription, cancelSubscription, reactivateSubscription, getInvoices, getCustomerData, updateCustomerData, applyCouponToSubscription, removeCouponFromSubscription } from "@/app/actions/stripe";
+import { getStorageProduct, getCurrentPlan, getCurrentStorage, getUpcomingInvoice, addStorageAddon, removeStorageAddon, createSubscription, updateSubscription, cancelSubscription, reactivateSubscription, getInvoices, getCustomerData, updateCustomerData, applyCouponToSubscription, removeCouponFromSubscription } from "@/app/actions/stripe";
 import Swal from 'sweetalert2';
 import ReactSelect, { components, SingleValue } from 'react-select';
 import { Icon } from '@iconify/react';
@@ -371,11 +371,15 @@ export default function MeuPlano() {
 
   // Storage product from Stripe
   const [storageProduct, setStorageProduct] = useState<StorageProductData | null>(null);
-  const [loadingStorage, setLoadingStorage] = useState(true);
+  const [loadingStorageProduct, setLoadingStorageProduct] = useState(true);
 
   // Current plan from Stripe
   const [currentPlan, setCurrentPlan] = useState<CurrentPlanData | null>(null);
   const [loadingPlan, setLoadingPlan] = useState(true);
+
+  // Current storage subscription from Stripe (subscription separada)
+  const [currentStorage, setCurrentStorage] = useState<any>(null);
+  const [loadingCurrentStorage, setLoadingCurrentStorage] = useState(true);
 
   // Upcoming invoice from Stripe
   const [upcomingInvoice, setUpcomingInvoice] = useState<UpcomingInvoice | null>(null);
@@ -569,7 +573,7 @@ export default function MeuPlano() {
       } catch (error) {
         console.error('Erro ao carregar produto de armazenamento:', error);
       } finally {
-        setLoadingStorage(false);
+        setLoadingStorageProduct(false);
       }
     }
     loadStorageProduct();
@@ -588,6 +592,21 @@ export default function MeuPlano() {
       }
     }
     loadCurrentPlan();
+  }, []);
+
+  // Carregar storage atual do Stripe (subscription separada)
+  useEffect(() => {
+    async function loadCurrentStorage() {
+      try {
+        const data = await getCurrentStorage();
+        setCurrentStorage(data);
+      } catch (error) {
+        console.error('Erro ao carregar storage atual:', error);
+      } finally {
+        setLoadingCurrentStorage(false);
+      }
+    }
+    loadCurrentStorage();
   }, []);
 
   // Carregar próxima fatura do Stripe
@@ -773,6 +792,17 @@ export default function MeuPlano() {
         }
       }
 
+      // Adicionar subscription de storage separada (nova estratégia)
+      if (currentStorage?.hasStorage && currentStorage?.subscription?.items) {
+        for (const item of currentStorage.subscription.items) {
+          const amount = (item.price.unit_amount || 0) / 100;
+          const quantity = item.quantity || 1;
+          const itemTotal = amount * quantity;
+          storageTotal += itemTotal;
+          total += itemTotal;
+        }
+      }
+
       // Aplicar desconto se houver cupom (apenas no plano principal)
       let discount = 0;
       let totalWithDiscount = total;
@@ -840,7 +870,7 @@ export default function MeuPlano() {
       totalWithDiscount: total,
       storageGB,
     };
-  }, [channels, seats, plan, storagePlan, planMonthlyForTotal, currentPlan]);
+  }, [channels, seats, plan, storagePlan, planMonthlyForTotal, currentPlan, currentStorage]);
 
   // Paginação de faturas
   const paginatedInvoices = useMemo(() => {
@@ -1385,9 +1415,17 @@ export default function MeuPlano() {
                     <div className="text-lg font-semibold">Plano atual</div>
                     <div className="text-sm text-neutral-600">
                       {currentPlan.product.name || 'Plano'} ·
-                      {currentPlan.subscription.items[0]?.price.recurring?.interval === 'year' ? ' Anual' :
-                       currentPlan.subscription.items[0]?.price.recurring?.interval === 'month' ? ' Mensal' :
-                       ' Personalizado'}
+                      {(() => {
+                        const recurring = currentPlan.subscription.items[0]?.price.recurring;
+                        if (recurring?.interval === 'year') return ' Anual';
+                        if (recurring?.interval === 'month') {
+                          const intervalCount = recurring.interval_count || 1;
+                          if (intervalCount === 3) return ' Trimestral';
+                          if (intervalCount === 1) return ' Mensal';
+                          return ` ${intervalCount} meses`;
+                        }
+                        return ' Personalizado';
+                      })()}
                       {currentPlan.product.metadata?.whatsapp_slots && ` · Inclui ${currentPlan.product.metadata.whatsapp_slots} WhatsApp`}
                       {currentPlan.product.metadata?.birdid_seats && `, ${currentPlan.product.metadata.birdid_seats} BirdID`}
                       {currentPlan.product.metadata?.storage_gb && `, ${currentPlan.product.metadata.storage_gb} GB de storage`}
@@ -1462,8 +1500,16 @@ export default function MeuPlano() {
                             {currentPlan.subscription.items[0]?.price.unit_amount ? (
                               <>
                                 {money((currentPlan.subscription.items[0].price.unit_amount / 100))}
-                                {currentPlan.subscription.items[0].price.recurring?.interval === 'year' && ' / ano'}
-                                {currentPlan.subscription.items[0].price.recurring?.interval === 'month' && ' / mês'}
+                                {(() => {
+                                  const recurring = currentPlan.subscription.items[0].price.recurring;
+                                  if (recurring?.interval === 'year') return ' / ano';
+                                  if (recurring?.interval === 'month') {
+                                    const intervalCount = recurring.interval_count || 1;
+                                    if (intervalCount === 3) return ' / 3 meses';
+                                    return ' / mês';
+                                  }
+                                  return '';
+                                })()}
                               </>
                             ) : (
                               'N/A'
@@ -1473,12 +1519,18 @@ export default function MeuPlano() {
                             {currentPlan.subscription.items[0]?.price.unit_amount && (currentPlan.subscription as any).discount.coupon.percent_off ? (
                               <>
                                 {money((currentPlan.subscription.items[0].price.unit_amount / 100) * (1 - (currentPlan.subscription as any).discount.coupon.percent_off / 100))}
-                                {currentPlan.subscription.items[0].price.recurring?.interval === 'year' && (
-                                  <span className="text-xs font-normal text-neutral-500"> / ano</span>
-                                )}
-                                {currentPlan.subscription.items[0].price.recurring?.interval === 'month' && (
-                                  <span className="text-xs font-normal text-neutral-500"> / mês</span>
-                                )}
+                                <span className="text-xs font-normal text-neutral-500">
+                                  {(() => {
+                                    const recurring = currentPlan.subscription.items[0].price.recurring;
+                                    if (recurring?.interval === 'year') return ' / ano';
+                                    if (recurring?.interval === 'month') {
+                                      const intervalCount = recurring.interval_count || 1;
+                                      if (intervalCount === 3) return ' / 3 meses';
+                                      return ' / mês';
+                                    }
+                                    return '';
+                                  })()}
+                                </span>
                               </>
                             ) : (
                               money((currentPlan.subscription.items[0]?.price.unit_amount || 0) / 100)
@@ -1494,22 +1546,44 @@ export default function MeuPlano() {
                             {currentPlan.subscription.items[0]?.price.unit_amount ? (
                               <>
                                 {money((currentPlan.subscription.items[0].price.unit_amount / 100))}
-                                {currentPlan.subscription.items[0].price.recurring?.interval === 'year' && (
-                                  <span className="text-xs font-normal text-neutral-500"> / ano</span>
-                                )}
-                                {currentPlan.subscription.items[0].price.recurring?.interval === 'month' && (
-                                  <span className="text-xs font-normal text-neutral-500"> / mês</span>
-                                )}
+                                <span className="text-xs font-normal text-neutral-500">
+                                  {(() => {
+                                    const recurring = currentPlan.subscription.items[0].price.recurring;
+                                    if (recurring?.interval === 'year') return ' / ano';
+                                    if (recurring?.interval === 'month') {
+                                      const intervalCount = recurring.interval_count || 1;
+                                      if (intervalCount === 3) return ' / 3 meses';
+                                      return ' / mês';
+                                    }
+                                    return '';
+                                  })()}
+                                </span>
                               </>
                             ) : (
                               'N/A'
                             )}
                           </div>
-                          {currentPlan.subscription.items[0]?.price.recurring?.interval === 'year' && currentPlan.subscription.items[0]?.price.unit_amount && (
-                            <div className="text-xs text-neutral-500">
-                              equiv. {money((currentPlan.subscription.items[0].price.unit_amount / 100) / 12)}/mês
-                            </div>
-                          )}
+                          {(() => {
+                            const recurring = currentPlan.subscription.items[0]?.price.recurring;
+                            const amount = currentPlan.subscription.items[0]?.price.unit_amount;
+                            if (!recurring || !amount) return null;
+
+                            if (recurring.interval === 'year') {
+                              return (
+                                <div className="text-xs text-neutral-500">
+                                  equiv. {money((amount / 100) / 12)}/mês
+                                </div>
+                              );
+                            }
+                            if (recurring.interval === 'month' && recurring.interval_count === 3) {
+                              return (
+                                <div className="text-xs text-neutral-500">
+                                  equiv. {money((amount / 100) / 3)}/mês
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()}
                         </>
                       )}
                     </div>
@@ -1906,23 +1980,15 @@ export default function MeuPlano() {
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
                 <div>
                   <h2 className="text-base sm:text-lg font-semibold">Armazenamento</h2>
-                  {loadingPlan ? (
+                  {loadingCurrentStorage ? (
                     <div className="bg-gray-200 w-64 h-4 rounded mt-1" style={{animation: 'none'}}></div>
-                  ) : currentPlan?.subscription ? (
+                  ) : currentStorage?.hasStorage && currentStorage?.subscription ? (
                     (() => {
-                      // Buscar o item de storage na subscription
-                      const storageProductId = 'prod_T9AfZhzca9pgNW';
-                      const storageItem = currentPlan.subscription.items.find(
-                        (item: any) => {
-                          const productId = typeof item.price.product === 'string'
-                            ? item.price.product
-                            : item.price.product?.id;
-                          return productId === storageProductId;
-                        }
-                      );
+                      // Pegar dados da subscription de storage
+                      const storageItem = currentStorage.subscription.items[0];
 
                       if (storageItem) {
-                        const priceName = (storageItem as any).price.nickname || 'Plano de armazenamento';
+                        const priceName = storageItem.price.nickname || 'Plano de armazenamento';
                         const priceAmount = storageItem.price.unit_amount ? (storageItem.price.unit_amount / 100) : 0;
 
                         return (
@@ -1935,17 +2001,11 @@ export default function MeuPlano() {
                             )}
                           </p>
                         );
-                      } else {
-                        return (
-                          <p className="text-sm text-gray-600 mt-1">
-                            Plano atual: <span className="font-semibold">Nenhum plano de armazenamento contratado</span>
-                          </p>
-                        );
                       }
                     })()
                   ) : (
                     <p className="text-sm text-gray-600 mt-1">
-                      Plano atual: <span className="font-semibold">{STORAGE_PLANS[storagePlan].label}</span> - {fmtGB(totals.storageGB)}
+                      Plano atual: <span className="font-semibold">Nenhum plano de armazenamento contratado</span>
                     </p>
                   )}
                 </div>
@@ -2310,7 +2370,7 @@ export default function MeuPlano() {
 
       <Modal isOpen={addStorageOpen} title="Alterar Plano de Armazenamento" onClose={() => setAddStorageOpen(false)}>
           <div className="space-y-4">
-            {loadingStorage ? (
+            {loadingStorageProduct ? (
               <SkeletonList items={3} />
             ) : storageProduct && storageProduct.product ? (
               <>
@@ -2331,17 +2391,9 @@ export default function MeuPlano() {
                       const isPopular = price.metadata?.popular === 'true';
                       const badge = price.metadata?.badge || '';
 
-                      // Verificar se este é o plano atual
-                      const storageProductId = 'prod_T9AfZhzca9pgNW';
-                      const currentStorageItem = currentPlan?.subscription?.items.find(
-                        (item: any) => {
-                          const productId = typeof item.price.product === 'string'
-                            ? item.price.product
-                            : item.price.product?.id;
-                          return productId === storageProductId;
-                        }
-                      );
-                      const isCurrentPlan = (currentStorageItem as any)?.price.id === price.id;
+                      // Verificar se este é o plano atual (agora storage é subscription separada)
+                      const currentStorageItem = currentStorage?.subscription?.items?.[0];
+                      const isCurrentPlan = currentStorageItem?.price.id === price.id;
 
                       return (
                         <button
@@ -2403,9 +2455,11 @@ export default function MeuPlano() {
                                   }
                                 });
 
-                              // Recarregar os dados
-                              const data = await getCurrentPlan();
-                              setCurrentPlan(data);
+                              // Recarregar os dados do plano e storage
+                              const planData = await getCurrentPlan();
+                              const storageData = await getCurrentStorage();
+                              setCurrentPlan(planData);
+                              setCurrentStorage(storageData);
                               setAddStorageOpen(false);
                             } catch (error) {
                               console.error('Erro ao alterar plano:', error);

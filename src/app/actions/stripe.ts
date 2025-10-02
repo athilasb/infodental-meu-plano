@@ -273,58 +273,19 @@ export async function getAvailableAddons(planProductId: string = 'prod_T9AmlVw7Z
 export async function getStorageProduct() {
   try {
     const productId = 'prod_T9AfZhzca9pgNW';
-    const customerId = process.env.STRIPE_CUSTOMER_ID;
 
     // Buscar o produto
     const product = await stripe.products.retrieve(productId);
 
-    // Buscar a subscription ativa para determinar o intervalo
-    let currentInterval: { interval: string; interval_count: number } | null = null;
-    if (customerId) {
-      const subscriptions = await stripe.subscriptions.list({
-        customer: customerId,//Subscription objeto complet
-        status: 'active',
-        limit: 1,
-      });
-
-      const subscription = subscriptions.data[0];
-      if (subscription) {
-        // Pegar o intervalo do plano principal
-        const mainItem = subscription.items.data.find(item =>
-          item.price.product === 'prod_T9AmlVw7Z608Rm'
-        );
-
-        if (mainItem?.price.recurring) {
-          currentInterval = {
-            interval: mainItem.price.recurring.interval,
-            interval_count: mainItem.price.recurring.interval_count,
-          };
-        }
-      }
-    }
-
-    // Buscar todos os preços deste produto que são addons
+    // Buscar TODOS os preços ativos deste produto
     const prices = await stripe.prices.list({
       product: productId,
       active: true,
       limit: 100,
     });
 
-    // Filtrar apenas os preços que são addons compatíveis e com o mesmo intervalo
-    const addonPrices = prices.data.filter(price => {
-      const metadata = price.metadata || {};
-      const isAddon = metadata.type === 'addon' && metadata.compatible_with === 'prod_T9AmlVw7Z608Rm';
-
-      // Se temos um intervalo atual, filtrar apenas preços com o mesmo intervalo
-      if (isAddon && currentInterval && price.recurring) {
-        return price.recurring.interval === currentInterval.interval &&
-               price.recurring.interval_count === currentInterval.interval_count;
-      }
-
-      return isAddon;
-    });
-
-
+    // Retornar TODOS os preços ativos (sem filtro)
+    // Storage agora é subscription separada
     return {
       product: {
         id: product.id,
@@ -332,7 +293,7 @@ export async function getStorageProduct() {
         description: product.description,
         metadata: product.metadata,
       },
-      prices: addonPrices.map(price => ({
+      prices: prices.data.map(price => ({
         id: price.id,
         nickname: price.nickname,
         unit_amount: price.unit_amount,
@@ -372,8 +333,9 @@ export async function getCurrentPlan() {
       limit: 100,
     });
 
-    // Filter to get only relevant statuses
+    // Filter to get only relevant statuses and ONLY the main plan subscription
     let subscription: any = null;
+    const mainPlanProductId = productId; // 'prod_T9AmlVw7Z608Rm'
 
     for (const sub of subscriptions.data) {
       // Only include active, trialing, past_due, or unpaid subscriptions
@@ -381,9 +343,17 @@ export async function getCurrentPlan() {
         continue;
       }
 
+      // Check if this subscription has the main plan product
+      const hasMainPlan = sub.items.data.some(item => item.price.product === mainPlanProductId);
+
+      if (!hasMainPlan) {
+        // Skip subscriptions that are not the main plan (storage, infozap, etc)
+        continue;
+      }
+
       // Get subscription with expanded details
       subscription = await stripe.subscriptions.retrieve(sub.id, {
-        expand: ['items.data.price', 'default_payment_method', 'discounts'],
+        expand: ['items.data.price', 'default_payment_method', 'discount.coupon', 'discounts'],
       });
 
       // Now get product details for each item
@@ -393,7 +363,7 @@ export async function getCurrentPlan() {
         }
       }
 
-      // Get the first valid subscription and break
+      // Found the main plan subscription, break
       break;
     }
 
@@ -423,11 +393,22 @@ export async function getCurrentPlan() {
         current_period_start: subscription.items?.data?.[0]?.current_period_start || null,
         cancel_at_period_end: subscription.cancel_at_period_end,
         discount: (() => {
+          // Suportar tanto subscription.discount quanto subscription.discounts
           const discounts = (subscription as any).discounts;
-          if (!discounts || discounts.length === 0) return null;
+          const singleDiscount = (subscription as any).discount;
 
-          const discount = discounts[0]; // Pegar o primeiro desconto
-          if (!discount.coupon) return null;
+          let discount = null;
+
+          // Verificar se tem discounts (plural - array)
+          if (discounts && discounts.length > 0) {
+            discount = discounts[0]; // Pegar o primeiro desconto
+          }
+          // Verificar se tem discount (singular - objeto)
+          else if (singleDiscount) {
+            discount = singleDiscount;
+          }
+
+          if (!discount || !discount.coupon) return null;
 
           return {
             coupon: {
@@ -582,61 +563,25 @@ export async function getUpcomingInvoice() {
   }
 }
 
+/**
+ * DEPRECATED: Use addOrChangeStoragePlan() ao invés
+ * Mantido para compatibilidade com código existente
+ * Agora chama addOrChangeStoragePlan() para funcionar tanto para adicionar quanto alterar
+ */
 export async function addStorageAddon(priceId: string) {
-  try {
+  console.warn('⚠️ addStorageAddon está deprecated. Use addOrChangeStoragePlan()');
 
-    const customerId = process.env.STRIPE_CUSTOMER_ID;
-
-    if (!customerId) {
-      throw new Error('Customer ID não configurado');
-    }
-
-    // Buscar subscription ativa
-    const subscriptions = await stripe.subscriptions.list({
-      customer: customerId,
-      status: 'active',
-      limit: 1,
-    });
-    const subscription = subscriptions.data[0];
-
-    if (!subscription) {
-      throw new Error('Nenhuma subscription ativa encontrada');
-    }
-    // Verificar se já existe um addon de armazenamento (produto prod_T9AfZhzca9pgNW)
-    const storageProductId = 'prod_T9AfZhzca9pgNW';
-    const existingStorageItem = subscription.items.data.find(item => {
-      return item.price.product === storageProductId;
-    });
-
-    // Se já existe, remover o item antigo
-    if (existingStorageItem) {
-      await stripe.subscriptionItems.del(existingStorageItem.id);
-    } else {
-    }
-
-    // Verificar o intervalo do preço do addon
-    const addonPrice = await stripe.prices.retrieve(priceId);
-    // Verificar o intervalo do plano principal
-    const mainItem = subscription.items.data.find(item => item.price.product !== storageProductId);
-    if (mainItem) {
-    }
-    const newItem = await stripe.subscriptionItems.create({
-      subscription: subscription.id,
-      price: priceId,
-      quantity: 1,
-      proration_behavior: 'create_prorations',
-    });
-
-    return { success: true };
-  } catch (error: any) {
-    console.error('❌ Erro ao adicionar addon de armazenamento:', error);
-    console.error('❌ Código:', error.code);
-    console.error('❌ Mensagem:', error.message);
-    throw error;
-  }
+  // Redirecionar para a função inteligente que adiciona OU altera
+  return await addOrChangeStoragePlan(priceId);
 }
 
+/**
+ * DEPRECATED: Use cancelSpecificSubscription() ao invés
+ * Mantido para compatibilidade com código existente
+ */
 export async function removeStorageAddon() {
+  console.warn('⚠️ removeStorageAddon está deprecated. Use cancelSpecificSubscription()');
+
   try {
     const customerId = process.env.STRIPE_CUSTOMER_ID;
 
@@ -644,32 +589,26 @@ export async function removeStorageAddon() {
       throw new Error('Customer ID não configurado');
     }
 
-    // Buscar subscription ativa
-    const subscriptions = await stripe.subscriptions.list({
-      customer: customerId,
-      status: 'active',
-      limit: 1,
-    });
-
-    const subscription = subscriptions.data[0];
-
-    if (!subscription) {
-      throw new Error('Nenhuma subscription ativa encontrada');
-    }
-
-    // Encontrar e remover o addon de armazenamento
+    // Buscar subscription de storage
+    const allSubs = await getAllCustomerSubscriptions();
     const storageProductId = 'prod_T9AfZhzca9pgNW';
-    const storageItem = subscription.items.data.find(item => {
-      return item.price.product === storageProductId;
-    });
 
-    if (storageItem) {
-      await stripe.subscriptionItems.del(storageItem.id);
+    const storageSub = allSubs.subscriptions.find(sub =>
+      sub.items.some(item =>
+        typeof item.price.product === 'string'
+          ? item.price.product === storageProductId
+          : (item.price.product as any).id === storageProductId
+      )
+    );
+
+    if (!storageSub) {
+      throw new Error('Nenhuma subscription de storage encontrada');
     }
 
-    return { success: true };
+    // Cancelar subscription de storage
+    return await cancelSpecificSubscription(storageSub.id);
   } catch (error) {
-    console.error('Erro ao remover addon de armazenamento:', error);
+    console.error('Erro ao remover storage:', error);
     throw error;
   }
 }
@@ -682,15 +621,21 @@ export async function createSubscription(priceId: string) {
       throw new Error('Customer ID não configurado');
     }
 
-    // Verificar se já existe uma subscription ativa
+    const planProductId = 'prod_T9AmlVw7Z608Rm';
+
+    // Verificar se já existe uma subscription do plano principal ativa
     const existingSubscriptions = await stripe.subscriptions.list({
       customer: customerId,
       status: 'active',
-      limit: 1,
+      limit: 100,
     });
 
-    if (existingSubscriptions.data.length > 0) {
-      throw new Error('Já existe uma subscription ativa');
+    const existingMainPlan = existingSubscriptions.data.find(sub =>
+      sub.items.data.some(item => item.price.product === planProductId)
+    );
+
+    if (existingMainPlan) {
+      throw new Error('Já existe uma subscription do plano principal ativa');
     }
 
     // Buscar o customer para verificar se tem método de pagamento padrão
@@ -730,21 +675,25 @@ export async function updateSubscription(newPriceId: string) {
       throw new Error('Customer ID não configurado');
     }
 
-    // Buscar subscription ativa
+    const planProductId = 'prod_T9AmlVw7Z608Rm';
+
+    // Buscar TODAS as subscriptions ativas
     const subscriptions = await stripe.subscriptions.list({
       customer: customerId,
       status: 'active',
-      limit: 1,
+      limit: 100,
     });
 
-    const subscription = subscriptions.data[0];
+    // Encontrar a subscription do plano principal
+    const subscription = subscriptions.data.find(sub =>
+      sub.items.data.some(item => item.price.product === planProductId)
+    );
 
     if (!subscription) {
-      throw new Error('Nenhuma subscription ativa encontrada');
+      throw new Error('Nenhuma subscription do plano principal encontrada');
     }
 
-    // Encontrar o item do plano principal (produto prod_T9AmlVw7Z608Rm)
-    const planProductId = 'prod_T9AmlVw7Z608Rm';
+    // Encontrar o item do plano principal dentro da subscription
     const planItem = subscription.items.data.find(item => {
       return item.price.product === planProductId;
     });
@@ -777,17 +726,22 @@ export async function cancelSubscription() {
       throw new Error('Customer ID não configurado');
     }
 
-    // Buscar subscription ativa
+    const planProductId = 'prod_T9AmlVw7Z608Rm';
+
+    // Buscar TODAS as subscriptions ativas
     const subscriptions = await stripe.subscriptions.list({
       customer: customerId,
       status: 'active',
-      limit: 1,
+      limit: 100,
     });
 
-    const subscription = subscriptions.data[0];
+    // Encontrar a subscription do plano principal
+    const subscription = subscriptions.data.find(sub =>
+      sub.items.data.some(item => item.price.product === planProductId)
+    );
 
     if (!subscription) {
-      throw new Error('Nenhuma subscription ativa encontrada');
+      throw new Error('Nenhuma subscription do plano principal encontrada');
     }
 
     // Cancelar a subscription no final do período (cancel_at_period_end)
@@ -814,17 +768,22 @@ export async function reactivateSubscription() {
       throw new Error('Customer ID não configurado');
     }
 
-    // Buscar subscription ativa (mesmo que agendada para cancelamento)
+    const planProductId = 'prod_T9AmlVw7Z608Rm';
+
+    // Buscar TODAS as subscriptions ativas (mesmo que agendadas para cancelamento)
     const subscriptions = await stripe.subscriptions.list({
       customer: customerId,
       status: 'active',
-      limit: 1,
+      limit: 100,
     });
 
-    const subscription = subscriptions.data[0];
+    // Encontrar a subscription do plano principal
+    const subscription = subscriptions.data.find(sub =>
+      sub.items.data.some(item => item.price.product === planProductId)
+    );
 
     if (!subscription) {
-      throw new Error('Nenhuma subscription encontrada');
+      throw new Error('Nenhuma subscription do plano principal encontrada');
     }
 
     if (!subscription.cancel_at_period_end) {
@@ -885,17 +844,22 @@ export async function applyCouponToSubscription(couponCode: string) {
       throw new Error('Customer ID não configurado');
     }
 
-    // Buscar subscription ativa
+    const mainPlanProductId = 'prod_T9AmlVw7Z608Rm';
+
+    // Buscar TODAS as subscriptions ativas
     const subscriptions = await stripe.subscriptions.list({
       customer: customerId,
       status: 'active',
-      limit: 1,
+      limit: 100,
     });
 
-    const subscription = subscriptions.data[0];
+    // Encontrar a subscription do plano principal
+    const mainPlanSubscription = subscriptions.data.find(sub =>
+      sub.items.data.some(item => item.price.product === mainPlanProductId)
+    );
 
-    if (!subscription) {
-      throw new Error('Nenhuma subscription ativa encontrada');
+    if (!mainPlanSubscription) {
+      throw new Error('Nenhuma subscription do plano principal encontrada');
     }
 
     // Validar o cupom primeiro
@@ -905,8 +869,8 @@ export async function applyCouponToSubscription(couponCode: string) {
       throw new Error('Cupom inválido');
     }
 
-    // Aplicar o cupom à subscription
-    await stripe.subscriptions.update(subscription.id, {
+    // Aplicar o cupom à subscription do plano principal
+    await stripe.subscriptions.update(mainPlanSubscription.id, {
       discounts: [{ coupon: couponCode }],
     });
 
@@ -929,21 +893,26 @@ export async function removeCouponFromSubscription() {
       throw new Error('Customer ID não configurado');
     }
 
-    // Buscar subscription ativa
+    const mainPlanProductId = 'prod_T9AmlVw7Z608Rm';
+
+    // Buscar TODAS as subscriptions ativas
     const subscriptions = await stripe.subscriptions.list({
       customer: customerId,
       status: 'active',
-      limit: 1,
+      limit: 100,
     });
 
-    const subscription = subscriptions.data[0];
+    // Encontrar a subscription do plano principal
+    const mainPlanSubscription = subscriptions.data.find(sub =>
+      sub.items.data.some(item => item.price.product === mainPlanProductId)
+    );
 
-    if (!subscription) {
-      throw new Error('Nenhuma subscription ativa encontrada');
+    if (!mainPlanSubscription) {
+      throw new Error('Nenhuma subscription do plano principal encontrada');
     }
 
-    // Remover o cupom
-    await stripe.subscriptions.update(subscription.id, {
+    // Remover o cupom da subscription do plano principal
+    await stripe.subscriptions.update(mainPlanSubscription.id, {
       discounts: [],
     });
 
@@ -952,6 +921,459 @@ export async function removeCouponFromSubscription() {
     };
   } catch (error) {
     console.error('Erro ao remover cupom:', error);
+    throw error;
+  }
+}
+
+// ==========================================
+// NOVA ESTRATÉGIA: SUBSCRIPTIONS SEPARADAS
+// ==========================================
+
+/**
+ * Lista TODAS as subscriptions ativas do customer
+ */
+export async function getAllCustomerSubscriptions() {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      throw new Error('Customer ID não configurado');
+    }
+
+    // Buscar subscriptions sem expand (evita erro de limite de 4 níveis)
+    const subscriptions = await stripe.subscriptions.list({
+      customer: customerId,
+      status: 'active',
+      limit: 100,
+    });
+
+    return {
+      subscriptions: subscriptions.data.map(sub => ({
+        id: sub.id,
+        status: sub.status,
+        current_period_end: sub.current_period_end,
+        current_period_start: sub.current_period_start,
+        cancel_at_period_end: sub.cancel_at_period_end,
+        items: sub.items.data.map(item => ({
+          id: item.id,
+          price: {
+            id: item.price.id,
+            product: item.price.product, // Retorna só o ID (string)
+            unit_amount: item.price.unit_amount,
+            recurring: item.price.recurring,
+            nickname: item.price.nickname
+          },
+          quantity: item.quantity
+        }))
+      }))
+    };
+  } catch (error) {
+    console.error('Erro ao listar subscriptions:', error);
+    throw error;
+  }
+}
+
+/**
+ * Busca todos os preços disponíveis de um produto
+ */
+export async function getProductPrices(productId: string) {
+  try {
+    const prices = await stripe.prices.list({
+      product: productId,
+      active: true,
+      limit: 100,
+    });
+
+    // Buscar informações do produto
+    const product = await stripe.products.retrieve(productId);
+
+    return {
+      product: {
+        id: product.id,
+        name: product.name,
+        description: product.description,
+        metadata: product.metadata,
+      },
+      prices: prices.data.map(price => ({
+        id: price.id,
+        nickname: price.nickname,
+        unit_amount: price.unit_amount,
+        currency: price.currency,
+        recurring: price.recurring,
+        metadata: price.metadata,
+      }))
+    };
+  } catch (error) {
+    console.error('Erro ao buscar preços do produto:', error);
+    throw error;
+  }
+}
+
+/**
+ * Busca a subscription de storage do customer
+ */
+export async function getCurrentStorage() {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      throw new Error('Customer ID não configurado');
+    }
+
+    const storageProductId = 'prod_T9AfZhzca9pgNW';
+
+    // Buscar todas as subscriptions
+    const allSubs = await getAllCustomerSubscriptions();
+
+    // Encontrar a subscription de storage
+    const storageSub = allSubs.subscriptions.find(sub =>
+      sub.items.some(item =>
+        typeof item.price.product === 'string'
+          ? item.price.product === storageProductId
+          : (item.price.product as any).id === storageProductId
+      )
+    );
+
+    if (!storageSub) {
+      return { hasStorage: false, subscription: null };
+    }
+
+    // Buscar detalhes completos da subscription
+    const subscription = await stripe.subscriptions.retrieve(storageSub.id, {
+      expand: ['items.data.price.product']
+    });
+
+    return {
+      hasStorage: true,
+      subscription: {
+        id: subscription.id,
+        status: subscription.status,
+        current_period_end: subscription.current_period_end,
+        current_period_start: subscription.current_period_start,
+        cancel_at_period_end: subscription.cancel_at_period_end,
+        items: subscription.items.data.map(item => ({
+          id: item.id,
+          price: {
+            id: item.price.id,
+            nickname: item.price.nickname,
+            unit_amount: item.price.unit_amount,
+            recurring: item.price.recurring,
+          },
+          quantity: item.quantity
+        }))
+      }
+    };
+  } catch (error) {
+    console.error('Erro ao buscar storage atual:', error);
+    return { hasStorage: false, subscription: null };
+  }
+}
+
+/**
+ * Cria uma nova subscription separada para Storage
+ * SEMPRE MENSAL
+ */
+export async function createStorageSubscription(priceId: string) {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      throw new Error('Customer ID não configurado');
+    }
+
+    // Verificar se já existe subscription de storage
+    const allSubs = await getAllCustomerSubscriptions();
+    const storageProductId = 'prod_T9AfZhzca9pgNW';
+
+    const existingStorage = allSubs.subscriptions.find(sub =>
+      sub.items.some(item =>
+        typeof item.price.product === 'string'
+          ? item.price.product === storageProductId
+          : (item.price.product as any).id === storageProductId
+      )
+    );
+
+    if (existingStorage) {
+      throw new Error('Já existe uma subscription de armazenamento ativa');
+    }
+
+    // Buscar método de pagamento padrão
+    const customer = await stripe.customers.retrieve(customerId);
+
+    if (customer.deleted) {
+      throw new Error('Customer foi deletado');
+    }
+
+    const defaultPaymentMethod = customer.invoice_settings.default_payment_method;
+
+    if (!defaultPaymentMethod) {
+      throw new Error('Nenhum método de pagamento padrão configurado');
+    }
+
+    // Criar subscription separada
+    const subscription = await stripe.subscriptions.create({
+      customer: customerId,
+      items: [{ price: priceId }],
+      default_payment_method: defaultPaymentMethod as string,
+      payment_behavior: 'default_incomplete',
+      metadata: {
+        type: 'storage',
+        product_id: storageProductId
+      }
+    });
+
+    return {
+      success: true,
+      subscriptionId: subscription.id,
+      current_period_end: subscription.current_period_end
+    };
+  } catch (error) {
+    console.error('Erro ao criar subscription de storage:', error);
+    throw error;
+  }
+}
+
+/**
+ * Altera o plano de armazenamento existente
+ */
+export async function changeStoragePlan(newPriceId: string) {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      throw new Error('Customer ID não configurado');
+    }
+
+    // Buscar subscription de storage
+    const allSubs = await getAllCustomerSubscriptions();
+    const storageProductId = 'prod_T9AfZhzca9pgNW';
+
+    const storageSub = allSubs.subscriptions.find(sub =>
+      sub.items.some(item =>
+        typeof item.price.product === 'string'
+          ? item.price.product === storageProductId
+          : (item.price.product as any).id === storageProductId
+      )
+    );
+
+    if (!storageSub) {
+      throw new Error('Nenhuma subscription de armazenamento encontrada');
+    }
+
+    // Atualizar o price da subscription
+    await updateSubscriptionPrice(storageSub.id, newPriceId);
+
+    return {
+      success: true,
+      subscriptionId: storageSub.id
+    };
+  } catch (error) {
+    console.error('Erro ao alterar plano de storage:', error);
+    throw error;
+  }
+}
+
+/**
+ * Adiciona ou altera o plano de armazenamento
+ * Se já existe, altera. Se não existe, cria.
+ */
+export async function addOrChangeStoragePlan(priceId: string) {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      throw new Error('Customer ID não configurado');
+    }
+
+    // Verificar se já existe subscription de storage
+    const allSubs = await getAllCustomerSubscriptions();
+    const storageProductId = 'prod_T9AfZhzca9pgNW';
+
+    const existingStorage = allSubs.subscriptions.find(sub =>
+      sub.items.some(item =>
+        typeof item.price.product === 'string'
+          ? item.price.product === storageProductId
+          : (item.price.product as any).id === storageProductId
+      )
+    );
+
+    if (existingStorage) {
+      // Já existe - alterar plano
+      console.log('Storage já existe, alterando plano...');
+      return await changeStoragePlan(priceId);
+    } else {
+      // Não existe - criar novo
+      console.log('Storage não existe, criando...');
+      return await createStorageSubscription(priceId);
+    }
+  } catch (error) {
+    console.error('Erro ao adicionar/alterar storage:', error);
+    throw error;
+  }
+}
+
+/**
+ * Cria uma nova subscription separada para InfoZap
+ * SEMPRE MENSAL
+ */
+export async function createInfoZapSubscription(priceId: string) {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      throw new Error('Customer ID não configurado');
+    }
+
+    // Verificar se já existe subscription de infozap
+    const allSubs = await getAllCustomerSubscriptions();
+    const infozapProductId = 'prod_T9SqvByfpsLwI8';
+
+    const existingInfoZap = allSubs.subscriptions.find(sub =>
+      sub.items.some(item =>
+        typeof item.price.product === 'string'
+          ? item.price.product === infozapProductId
+          : (item.price.product as any).id === infozapProductId
+      )
+    );
+
+    if (existingInfoZap) {
+      throw new Error('Já existe uma subscription de InfoZap ativa');
+    }
+
+    // Buscar método de pagamento padrão
+    const customer = await stripe.customers.retrieve(customerId);
+
+    if (customer.deleted) {
+      throw new Error('Customer foi deletado');
+    }
+
+    const defaultPaymentMethod = customer.invoice_settings.default_payment_method;
+
+    if (!defaultPaymentMethod) {
+      throw new Error('Nenhum método de pagamento padrão configurado');
+    }
+
+    // Criar subscription separada
+    const subscription = await stripe.subscriptions.create({
+      customer: customerId,
+      items: [{ price: priceId }],
+      default_payment_method: defaultPaymentMethod as string,
+      payment_behavior: 'default_incomplete',
+      metadata: {
+        type: 'infozap',
+        product_id: infozapProductId
+      }
+    });
+
+    return {
+      success: true,
+      subscriptionId: subscription.id,
+      current_period_end: subscription.current_period_end
+    };
+  } catch (error) {
+    console.error('Erro ao criar subscription de InfoZap:', error);
+    throw error;
+  }
+}
+
+/**
+ * Cancela uma subscription específica
+ * Cancela no final do período (cancel_at_period_end)
+ */
+export async function cancelSpecificSubscription(subscriptionId: string) {
+  try {
+    const subscription = await stripe.subscriptions.update(subscriptionId, {
+      cancel_at_period_end: true
+    });
+
+    return {
+      success: true,
+      cancel_at: subscription.current_period_end
+    };
+  } catch (error) {
+    console.error('Erro ao cancelar subscription:', error);
+    throw error;
+  }
+}
+
+/**
+ * Cancela TODAS as subscriptions do customer
+ * Quando cancela o plano principal, cancela storage e infozap também
+ */
+export async function cancelAllSubscriptions() {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      throw new Error('Customer ID não configurado');
+    }
+
+    const allSubs = await getAllCustomerSubscriptions();
+
+    const cancelPromises = allSubs.subscriptions.map(sub =>
+      stripe.subscriptions.update(sub.id, {
+        cancel_at_period_end: true
+      })
+    );
+
+    await Promise.all(cancelPromises);
+
+    return {
+      success: true,
+      canceledCount: allSubs.subscriptions.length
+    };
+  } catch (error) {
+    console.error('Erro ao cancelar todas as subscriptions:', error);
+    throw error;
+  }
+}
+
+/**
+ * Reativa uma subscription cancelada
+ */
+export async function reactivateSpecificSubscription(subscriptionId: string) {
+  try {
+    const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+
+    if (!subscription.cancel_at_period_end) {
+      throw new Error('Subscription não está agendada para cancelamento');
+    }
+
+    const updated = await stripe.subscriptions.update(subscriptionId, {
+      cancel_at_period_end: false
+    });
+
+    return {
+      success: true,
+      subscriptionId: updated.id
+    };
+  } catch (error) {
+    console.error('Erro ao reativar subscription:', error);
+    throw error;
+  }
+}
+
+/**
+ * Atualiza o plano de uma subscription (troca de price)
+ */
+export async function updateSubscriptionPrice(subscriptionId: string, newPriceId: string) {
+  try {
+    const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+
+    if (subscription.items.data.length === 0) {
+      throw new Error('Subscription não tem items');
+    }
+
+    const itemId = subscription.items.data[0].id;
+
+    await stripe.subscriptionItems.update(itemId, {
+      price: newPriceId,
+      proration_behavior: 'create_prorations'
+    });
+
+    return { success: true };
+  } catch (error) {
+    console.error('Erro ao atualizar price da subscription:', error);
     throw error;
   }
 }
