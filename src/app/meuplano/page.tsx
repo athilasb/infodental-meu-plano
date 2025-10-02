@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Input, Select } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
-import { getStorageProduct, getCurrentPlan, getCurrentStorage, getUpcomingInvoice, addStorageAddon, removeStorageAddon, createSubscription, updateSubscription, cancelSubscription, reactivateSubscription, getInvoices, getCustomerData, updateCustomerData, applyCouponToSubscription, removeCouponFromSubscription } from "@/app/actions/stripe";
+import { getStorageProduct, getCurrentPlan, getCurrentStorage, getUpcomingInvoice, addStorageAddon, removeStorageAddon, createSubscription, updateSubscription, cancelSubscription, reactivateSubscription, getInvoices, getCustomerData, updateCustomerData, applyCouponToSubscription, removeCouponFromSubscription, validateCoupon } from "@/app/actions/stripe";
 import Swal from 'sweetalert2';
 import ReactSelect, { components, SingleValue } from 'react-select';
 import { Icon } from '@iconify/react';
@@ -1984,7 +1984,7 @@ export default function MeuPlano() {
                     <div className="bg-gray-200 w-64 h-4 rounded mt-1" style={{animation: 'none'}}></div>
                   ) : currentStorage?.hasStorage && currentStorage?.subscription ? (
                     (() => {
-                      // Pegar dados da subscription de storage
+                      // Pegar dados da subscription de storage (subscription separada)
                       const storageItem = currentStorage.subscription.items[0];
 
                       if (storageItem) {
@@ -2734,6 +2734,7 @@ export default function MeuPlano() {
                         onClick={async () => {
                           const action = currentPlan.subscription ? 'alterar' : 'contratar';
 
+                          // Se for contratar, mostrar opção de cupom
                           const result = await Swal.fire({
                             title: action === 'contratar' ? 'Contratar Plano' : 'Alterar Plano',
                             html: `
@@ -2744,6 +2745,22 @@ export default function MeuPlano() {
                                   <p style="font-size: 24px; color: #059669; font-weight: bold;">${money(priceAmount)}</p>
                                   <p style="font-size: 14px; color: #6b7280;">${interval === 'month' ? 'por mês' : interval === 'year' ? 'por ano' : ''}</p>
                                 </div>
+                                ${action === 'contratar' ? `
+                                  <div style="margin-bottom: 15px;">
+                                    <label for="swal-coupon-input" style="display: block; font-weight: 500; margin-bottom: 8px; color: #374151; font-size: 14px;">
+                                      Cupom de desconto (opcional)
+                                    </label>
+                                    <input
+                                      id="swal-coupon-input"
+                                      type="text"
+                                      placeholder="Digite o código do cupom"
+                                      style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px;"
+                                    />
+                                    <p style="font-size: 12px; color: #6b7280; margin-top: 5px;">
+                                      Se você possui um cupom de desconto, digite acima.
+                                    </p>
+                                  </div>
+                                ` : ''}
                                 <p style="color: #6b7280; font-size: 14px;">
                                   ${action === 'contratar' ? 'A cobrança será feita automaticamente todo mês.' : 'A alteração será aplicada na próxima cobrança.'}
                                 </p>
@@ -2759,12 +2776,24 @@ export default function MeuPlano() {
                               popup: 'rounded-2xl',
                               confirmButton: 'rounded-xl px-6 py-3 font-semibold',
                               cancelButton: 'rounded-xl px-6 py-3 font-semibold'
+                            },
+                            preConfirm: () => {
+                              if (action === 'contratar') {
+                                const couponInput = document.getElementById('swal-coupon-input') as HTMLInputElement;
+                                return {
+                                  couponCode: couponInput?.value?.trim() || ''
+                                };
+                              }
+                              return {};
                             }
                           });
 
                           if (!result.isConfirmed) {
                             return;
                           }
+
+                          // Pegar código do cupom (se houver)
+                          const couponCode = (result.value as any)?.couponCode || '';
 
                           // Mostrar loading
                           Swal.fire({
@@ -2795,17 +2824,73 @@ export default function MeuPlano() {
                             } else {
                               // Criar nova subscription
                               await createSubscription(price.id);
-                              await Swal.fire({
-                                title: 'Sucesso!',
-                                text: 'Plano contratado com sucesso!',
-                                icon: 'success',
-                                confirmButtonText: 'Ok',
-                                confirmButtonColor: '#059669',
-                                customClass: {
-                                  popup: 'rounded-2xl',
-                                  confirmButton: 'rounded-xl px-6 py-3 font-semibold'
+
+                              // Se há cupom, validar e aplicar
+                              if (couponCode) {
+                                try {
+                                  // Validar cupom
+                                  const couponValidation = await validateCoupon(couponCode);
+
+                                  if (couponValidation.success) {
+                                    // Aplicar cupom à subscription
+                                    await applyCouponToSubscription(couponCode);
+
+                                    await Swal.fire({
+                                      title: 'Sucesso!',
+                                      html: `
+                                        <p>Plano contratado com sucesso!</p>
+                                        <p style="color: #059669; font-weight: 600; margin-top: 10px;">
+                                          Cupom "${couponCode}" aplicado!
+                                        </p>
+                                      `,
+                                      icon: 'success',
+                                      confirmButtonText: 'Ok',
+                                      confirmButtonColor: '#059669',
+                                      customClass: {
+                                        popup: 'rounded-2xl',
+                                        confirmButton: 'rounded-xl px-6 py-3 font-semibold'
+                                      }
+                                    });
+                                  } else {
+                                    await Swal.fire({
+                                      title: 'Plano contratado!',
+                                      text: 'Plano contratado com sucesso, mas o cupom não pôde ser aplicado.',
+                                      icon: 'warning',
+                                      confirmButtonText: 'Ok',
+                                      confirmButtonColor: '#f59e0b',
+                                      customClass: {
+                                        popup: 'rounded-2xl',
+                                        confirmButton: 'rounded-xl px-6 py-3 font-semibold'
+                                      }
+                                    });
+                                  }
+                                } catch (couponError) {
+                                  console.error('Erro ao aplicar cupom:', couponError);
+                                  await Swal.fire({
+                                    title: 'Plano contratado!',
+                                    text: 'Plano contratado com sucesso, mas o cupom não pôde ser aplicado.',
+                                    icon: 'warning',
+                                    confirmButtonText: 'Ok',
+                                    confirmButtonColor: '#f59e0b',
+                                    customClass: {
+                                      popup: 'rounded-2xl',
+                                      confirmButton: 'rounded-xl px-6 py-3 font-semibold'
+                                    }
+                                  });
                                 }
-                              });
+                              } else {
+                                await Swal.fire({
+                                  title: 'Sucesso!',
+                                  text: 'Plano contratado com sucesso!',
+                                  icon: 'success',
+                                  confirmButtonText: 'Ok',
+                                  confirmButtonColor: '#059669',
+                                  customClass: {
+                                    popup: 'rounded-2xl',
+                                    confirmButton: 'rounded-xl px-6 py-3 font-semibold'
+                                  }
+                                });
+                              }
                             }
 
                             // Recarregar os dados

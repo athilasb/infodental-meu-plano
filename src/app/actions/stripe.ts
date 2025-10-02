@@ -507,6 +507,11 @@ export async function getUpcomingInvoice() {
       },
     });
 
+    // Se retornar 404, significa que não há próxima fatura (sem subscriptions ativas)
+    if (response.status === 404) {
+      return null;
+    }
+
     if (!response.ok) {
       throw new Error(`Stripe API error: ${response.statusText}`);
     }
@@ -576,41 +581,14 @@ export async function addStorageAddon(priceId: string) {
 }
 
 /**
- * DEPRECATED: Use cancelSpecificSubscription() ao invés
+ * DEPRECATED: Use removeStorageAddonFromSubscription() ao invés
  * Mantido para compatibilidade com código existente
  */
 export async function removeStorageAddon() {
-  console.warn('⚠️ removeStorageAddon está deprecated. Use cancelSpecificSubscription()');
+  console.warn('⚠️ removeStorageAddon está deprecated. Use removeStorageAddonFromSubscription()');
 
-  try {
-    const customerId = process.env.STRIPE_CUSTOMER_ID;
-
-    if (!customerId) {
-      throw new Error('Customer ID não configurado');
-    }
-
-    // Buscar subscription de storage
-    const allSubs = await getAllCustomerSubscriptions();
-    const storageProductId = 'prod_T9AfZhzca9pgNW';
-
-    const storageSub = allSubs.subscriptions.find(sub =>
-      sub.items.some(item =>
-        typeof item.price.product === 'string'
-          ? item.price.product === storageProductId
-          : (item.price.product as any).id === storageProductId
-      )
-    );
-
-    if (!storageSub) {
-      throw new Error('Nenhuma subscription de storage encontrada');
-    }
-
-    // Cancelar subscription de storage
-    return await cancelSpecificSubscription(storageSub.id);
-  } catch (error) {
-    console.error('Erro ao remover storage:', error);
-    throw error;
-  }
+  // Redirecionar para a nova função que remove o add-on da subscription principal
+  return await removeStorageAddonFromSubscription();
 }
 
 export async function createSubscription(priceId: string) {
@@ -926,6 +904,152 @@ export async function removeCouponFromSubscription() {
 }
 
 // ==========================================
+// FLEXIBLE BILLING MODE
+// ==========================================
+
+/**
+ * Migra uma subscription para flexible billing mode
+ * Isso permite adicionar items com diferentes intervalos de cobrança
+ * Necessário para subscriptions criadas antes da API version 2025-06-30.basil
+ */
+export async function migrateToFlexibleBilling(subscriptionId: string) {
+  try {
+    const secretKey = process.env.STRIPE_SECRET_KEY;
+
+    if (!secretKey) {
+      throw new Error('Secret Key não configurado');
+    }
+
+    console.log('Migrando subscription para flexible billing mode...');
+
+    // Usar API REST diretamente para migrar para flexible billing
+    const response = await fetch(`https://api.stripe.com/v1/subscriptions/${subscriptionId}`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${secretKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Stripe-Version': '2025-08-27.basil',
+      },
+      body: new URLSearchParams({
+        'metadata[billing_mode]': 'flexible',
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      console.error('Erro ao migrar:', error);
+      throw new Error(error.error?.message || 'Erro ao migrar para flexible billing');
+    }
+
+    const subscription = await response.json();
+
+    console.log('Subscription migrada com sucesso para flexible billing mode:', {
+      id: subscription.id,
+      status: subscription.status,
+    });
+
+    return {
+      success: true,
+      subscriptionId: subscription.id,
+    };
+  } catch (error) {
+    console.error('Erro ao migrar para flexible billing:', error);
+    throw error;
+  }
+}
+
+/**
+ * Cancela subscriptions incompletas (status: incomplete ou incomplete_expired)
+ * Útil para limpar subscriptions que ficaram em aberto
+ */
+export async function cancelIncompleteSubscriptions() {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      throw new Error('Customer ID não configurado');
+    }
+
+    // Buscar subscriptions incompletas
+    const incompleteSubscriptions = await stripe.subscriptions.list({
+      customer: customerId,
+      status: 'incomplete',
+      limit: 100,
+    });
+
+    const expiredSubscriptions = await stripe.subscriptions.list({
+      customer: customerId,
+      status: 'incomplete_expired',
+      limit: 100,
+    });
+
+    const allIncomplete = [
+      ...incompleteSubscriptions.data,
+      ...expiredSubscriptions.data,
+    ];
+
+    console.log(`Encontradas ${allIncomplete.length} subscriptions incompletas`);
+
+    // Cancelar todas
+    for (const sub of allIncomplete) {
+      try {
+        await stripe.subscriptions.cancel(sub.id);
+        console.log(`Subscription ${sub.id} cancelada`);
+      } catch (error) {
+        console.error(`Erro ao cancelar ${sub.id}:`, error);
+      }
+    }
+
+    return {
+      success: true,
+      canceledCount: allIncomplete.length,
+    };
+  } catch (error) {
+    console.error('Erro ao cancelar subscriptions incompletas:', error);
+    throw error;
+  }
+}
+
+/**
+ * Migra a subscription do plano principal para flexible billing mode
+ * Útil para chamar manualmente quando necessário
+ */
+export async function migrateMainPlanToFlexibleBilling() {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      throw new Error('Customer ID não configurado');
+    }
+
+    const mainPlanProductId = 'prod_T9AmlVw7Z608Rm';
+
+    // Buscar subscription do plano principal
+    const subscriptions = await stripe.subscriptions.list({
+      customer: customerId,
+      status: 'active',
+      limit: 100,
+    });
+
+    const mainPlanSub = subscriptions.data.find(sub =>
+      sub.items.data.some(item => item.price.product === mainPlanProductId)
+    );
+
+    if (!mainPlanSub) {
+      throw new Error('Nenhuma subscription do plano principal encontrada');
+    }
+
+    console.log('Encontrada subscription do plano principal:', mainPlanSub.id);
+
+    // Migrar para flexible billing
+    return await migrateToFlexibleBilling(mainPlanSub.id);
+  } catch (error) {
+    console.error('Erro ao migrar plano principal:', error);
+    throw error;
+  }
+}
+
+// ==========================================
 // NOVA ESTRATÉGIA: SUBSCRIPTIONS SEPARADAS
 // ==========================================
 
@@ -1010,7 +1134,7 @@ export async function getProductPrices(productId: string) {
 }
 
 /**
- * Busca a subscription de storage do customer
+ * Busca a subscription de storage separada (estratégia recomendada)
  */
 export async function getCurrentStorage() {
   try {
@@ -1081,7 +1205,14 @@ export async function createStorageSubscription(priceId: string) {
       throw new Error('Customer ID não configurado');
     }
 
-    // Verificar se já existe subscription de storage
+    // PRIMEIRO: Cancelar subscriptions incompletas (limpeza)
+    try {
+      await cancelIncompleteSubscriptions();
+    } catch (cleanupError) {
+      console.warn('Aviso ao limpar subscriptions incompletas:', cleanupError);
+    }
+
+    // Verificar se já existe subscription de storage ATIVA
     const allSubs = await getAllCustomerSubscriptions();
     const storageProductId = 'prod_T9AfZhzca9pgNW';
 
@@ -1110,12 +1241,13 @@ export async function createStorageSubscription(priceId: string) {
       throw new Error('Nenhum método de pagamento padrão configurado');
     }
 
-    // Criar subscription separada
+    // Criar subscription separada com cobrança imediata
     const subscription = await stripe.subscriptions.create({
       customer: customerId,
       items: [{ price: priceId }],
       default_payment_method: defaultPaymentMethod as string,
-      payment_behavior: 'default_incomplete',
+      payment_behavior: 'error_if_incomplete', // Cobra imediatamente e retorna erro se falhar
+      expand: ['latest_invoice.payment_intent'],
       metadata: {
         type: 'storage',
         product_id: storageProductId
@@ -1174,8 +1306,152 @@ export async function changeStoragePlan(newPriceId: string) {
 }
 
 /**
+ * Adiciona armazenamento como ADD-ON na subscription do plano principal
+ * NÃO cria subscription separada - adiciona como item na mesma subscription
+ * USA FLEXIBLE BILLING MODE para permitir diferentes intervalos
+ */
+export async function addStorageAsAddon(priceId: string) {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+    const secretKey = process.env.STRIPE_SECRET_KEY;
+
+    if (!customerId || !secretKey) {
+      throw new Error('Customer ID ou Secret Key não configurado');
+    }
+
+    const mainPlanProductId = 'prod_T9AmlVw7Z608Rm';
+    const storageProductId = 'prod_T9AfZhzca9pgNW';
+
+    // Buscar subscription do plano principal
+    const subscriptions = await stripe.subscriptions.list({
+      customer: customerId,
+      status: 'active',
+      limit: 100,
+    });
+
+    const mainPlanSub = subscriptions.data.find(sub =>
+      sub.items.data.some(item => item.price.product === mainPlanProductId)
+    );
+
+    if (!mainPlanSub) {
+      throw new Error('Nenhuma subscription do plano principal encontrada');
+    }
+
+    // Verificar se já existe storage como item nesta subscription
+    const existingStorageItem = mainPlanSub.items.data.find(item =>
+      item.price.product === storageProductId
+    );
+
+    if (existingStorageItem) {
+      // Já existe - atualizar o price
+      console.log('Storage já existe como add-on, atualizando...');
+      await stripe.subscriptionItems.update(existingStorageItem.id, {
+        price: priceId,
+        proration_behavior: 'create_prorations',
+      });
+    } else {
+      // Não existe - PRIMEIRO migrar para flexible billing, DEPOIS adicionar
+      console.log('Migrando subscription para flexible billing mode...');
+
+      try {
+        await migrateToFlexibleBilling(mainPlanSub.id);
+      } catch (migrateError) {
+        console.warn('Aviso ao migrar (pode já estar em flexible mode):', migrateError);
+        // Continuar mesmo se der erro - pode já estar migrada
+      }
+
+      console.log('Adicionando storage como add-on...');
+
+      const response = await fetch(`https://api.stripe.com/v1/subscription_items`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${secretKey}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Stripe-Version': '2025-08-27.basil',
+        },
+        body: new URLSearchParams({
+          'subscription': mainPlanSub.id,
+          'price': priceId,
+          'proration_behavior': 'create_prorations',
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error?.message || 'Erro ao adicionar storage');
+      }
+
+      const item = await response.json();
+      console.log('Storage adicionado com sucesso:', item.id);
+    }
+
+    return {
+      success: true,
+      subscriptionId: mainPlanSub.id,
+    };
+  } catch (error) {
+    console.error('Erro ao adicionar storage como add-on:', error);
+    throw error;
+  }
+}
+
+/**
+ * Remove armazenamento da subscription principal
+ */
+export async function removeStorageAddonFromSubscription() {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      throw new Error('Customer ID não configurado');
+    }
+
+    const mainPlanProductId = 'prod_T9AmlVw7Z608Rm';
+    const storageProductId = 'prod_T9AfZhzca9pgNW';
+
+    // Buscar subscription do plano principal
+    const subscriptions = await stripe.subscriptions.list({
+      customer: customerId,
+      status: 'active',
+      limit: 100,
+    });
+
+    const mainPlanSub = subscriptions.data.find(sub =>
+      sub.items.data.some(item => item.price.product === mainPlanProductId)
+    );
+
+    if (!mainPlanSub) {
+      throw new Error('Nenhuma subscription do plano principal encontrada');
+    }
+
+    // Encontrar o item de storage
+    const storageItem = mainPlanSub.items.data.find(item =>
+      item.price.product === storageProductId
+    );
+
+    if (!storageItem) {
+      throw new Error('Storage não encontrado na subscription');
+    }
+
+    // Remover o item
+    await stripe.subscriptionItems.del(storageItem.id, {
+      proration_behavior: 'create_prorations',
+    });
+
+    return {
+      success: true,
+      subscriptionId: mainPlanSub.id,
+    };
+  } catch (error) {
+    console.error('Erro ao remover storage:', error);
+    throw error;
+  }
+}
+
+/**
  * Adiciona ou altera o plano de armazenamento
  * Se já existe, altera. Se não existe, cria.
+ * USA SUBSCRIPTION SEPARADA (recomendado pelo Stripe)
  */
 export async function addOrChangeStoragePlan(priceId: string) {
   try {
@@ -1203,7 +1479,7 @@ export async function addOrChangeStoragePlan(priceId: string) {
       return await changeStoragePlan(priceId);
     } else {
       // Não existe - criar novo
-      console.log('Storage não existe, criando...');
+      console.log('Storage não existe, criando subscription separada...');
       return await createStorageSubscription(priceId);
     }
   } catch (error) {
@@ -1224,7 +1500,14 @@ export async function createInfoZapSubscription(priceId: string) {
       throw new Error('Customer ID não configurado');
     }
 
-    // Verificar se já existe subscription de infozap
+    // PRIMEIRO: Cancelar subscriptions incompletas (limpeza)
+    try {
+      await cancelIncompleteSubscriptions();
+    } catch (cleanupError) {
+      console.warn('Aviso ao limpar subscriptions incompletas:', cleanupError);
+    }
+
+    // Verificar se já existe subscription de infozap ATIVA
     const allSubs = await getAllCustomerSubscriptions();
     const infozapProductId = 'prod_T9SqvByfpsLwI8';
 
@@ -1253,12 +1536,13 @@ export async function createInfoZapSubscription(priceId: string) {
       throw new Error('Nenhum método de pagamento padrão configurado');
     }
 
-    // Criar subscription separada
+    // Criar subscription separada com cobrança imediata
     const subscription = await stripe.subscriptions.create({
       customer: customerId,
       items: [{ price: priceId }],
       default_payment_method: defaultPaymentMethod as string,
-      payment_behavior: 'default_incomplete',
+      payment_behavior: 'error_if_incomplete', // Cobra imediatamente e retorna erro se falhar
+      expand: ['latest_invoice.payment_intent'],
       metadata: {
         type: 'infozap',
         product_id: infozapProductId

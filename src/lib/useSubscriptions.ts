@@ -271,6 +271,7 @@ export function useSubscriptionManager() {
 
 /**
  * Hook para gerenciar Storage especificamente
+ * VERSÃO FINAL: Storage como subscription separada (recomendado pelo Stripe)
  */
 export function useStorageManager() {
   const { subscriptions, reload } = useAllSubscriptions();
