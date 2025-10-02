@@ -1075,9 +1075,9 @@ export async function getAllCustomerSubscriptions() {
       subscriptions: subscriptions.data.map(sub => ({
         id: sub.id,
         status: sub.status,
-        current_period_end: sub.current_period_end,
-        current_period_start: sub.current_period_start,
-        cancel_at_period_end: sub.cancel_at_period_end,
+        current_period_end: (sub as any).current_period_end,
+        current_period_start: (sub as any).current_period_start,
+        cancel_at_period_end: (sub as any).cancel_at_period_end,
         items: sub.items.data.map(item => ({
           id: item.id,
           price: {
