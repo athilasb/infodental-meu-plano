@@ -1172,9 +1172,9 @@ export async function getCurrentStorage() {
       subscription: {
         id: subscription.id,
         status: subscription.status,
-        current_period_end: subscription.current_period_end,
-        current_period_start: subscription.current_period_start,
-        cancel_at_period_end: subscription.cancel_at_period_end,
+        current_period_end: (subscription as any).current_period_end,
+        current_period_start: (subscription as any).current_period_start,
+        cancel_at_period_end: (subscription as any).cancel_at_period_end,
         items: subscription.items.data.map(item => ({
           id: item.id,
           price: {
@@ -1257,7 +1257,7 @@ export async function createStorageSubscription(priceId: string) {
     return {
       success: true,
       subscriptionId: subscription.id,
-      current_period_end: subscription.current_period_end
+      current_period_end: (subscription as any).current_period_end
     };
   } catch (error) {
     console.error('Erro ao criar subscription de storage:', error);
@@ -1552,7 +1552,7 @@ export async function createInfoZapSubscription(priceId: string) {
     return {
       success: true,
       subscriptionId: subscription.id,
-      current_period_end: subscription.current_period_end
+      current_period_end: (subscription as any).current_period_end
     };
   } catch (error) {
     console.error('Erro ao criar subscription de InfoZap:', error);
@@ -1572,7 +1572,7 @@ export async function cancelSpecificSubscription(subscriptionId: string) {
 
     return {
       success: true,
-      cancel_at: subscription.current_period_end
+      cancel_at: (subscription as any).current_period_end
     };
   } catch (error) {
     console.error('Erro ao cancelar subscription:', error);

@@ -57,7 +57,7 @@ export function useAllSubscriptions() {
       setLoading(true);
       setError(null);
       const { subscriptions: subs } = await getAllCustomerSubscriptions();
-      setSubscriptions(subs);
+      setSubscriptions(subs as Subscription[]);
     } catch (err) {
       setError(err as Error);
     } finally {
@@ -92,7 +92,7 @@ export function useProductPrices(productId: string) {
         setLoading(true);
         setError(null);
         const data = await getProductPrices(productId);
-        setPrices(data.prices);
+        setPrices(data.prices as Price[]);
         setProduct(data.product);
       } catch (err) {
         setError(err as Error);
