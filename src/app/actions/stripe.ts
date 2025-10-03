@@ -920,7 +920,6 @@ export async function migrateToFlexibleBilling(subscriptionId: string) {
       throw new Error('Secret Key não configurado');
     }
 
-    console.log('Migrando subscription para flexible billing mode...');
 
     // Usar API REST diretamente para migrar para flexible billing
     const response = await fetch(`https://api.stripe.com/v1/subscriptions/${subscriptionId}`, {
@@ -942,11 +941,6 @@ export async function migrateToFlexibleBilling(subscriptionId: string) {
     }
 
     const subscription = await response.json();
-
-    console.log('Subscription migrada com sucesso para flexible billing mode:', {
-      id: subscription.id,
-      status: subscription.status,
-    });
 
     return {
       success: true,
@@ -988,13 +982,10 @@ export async function cancelIncompleteSubscriptions() {
       ...expiredSubscriptions.data,
     ];
 
-    console.log(`Encontradas ${allIncomplete.length} subscriptions incompletas`);
-
     // Cancelar todas
     for (const sub of allIncomplete) {
       try {
         await stripe.subscriptions.cancel(sub.id);
-        console.log(`Subscription ${sub.id} cancelada`);
       } catch (error) {
         console.error(`Erro ao cancelar ${sub.id}:`, error);
       }
@@ -1039,7 +1030,6 @@ export async function migrateMainPlanToFlexibleBilling() {
       throw new Error('Nenhuma subscription do plano principal encontrada');
     }
 
-    console.log('Encontrada subscription do plano principal:', mainPlanSub.id);
 
     // Migrar para flexible billing
     return await migrateToFlexibleBilling(mainPlanSub.id);
@@ -1344,14 +1334,11 @@ export async function addStorageAsAddon(priceId: string) {
 
     if (existingStorageItem) {
       // Já existe - atualizar o price
-      console.log('Storage já existe como add-on, atualizando...');
       await stripe.subscriptionItems.update(existingStorageItem.id, {
         price: priceId,
         proration_behavior: 'create_prorations',
       });
     } else {
-      // Não existe - PRIMEIRO migrar para flexible billing, DEPOIS adicionar
-      console.log('Migrando subscription para flexible billing mode...');
 
       try {
         await migrateToFlexibleBilling(mainPlanSub.id);
@@ -1359,8 +1346,6 @@ export async function addStorageAsAddon(priceId: string) {
         console.warn('Aviso ao migrar (pode já estar em flexible mode):', migrateError);
         // Continuar mesmo se der erro - pode já estar migrada
       }
-
-      console.log('Adicionando storage como add-on...');
 
       const response = await fetch(`https://api.stripe.com/v1/subscription_items`, {
         method: 'POST',
@@ -1382,7 +1367,6 @@ export async function addStorageAsAddon(priceId: string) {
       }
 
       const item = await response.json();
-      console.log('Storage adicionado com sucesso:', item.id);
     }
 
     return {
@@ -1475,11 +1459,9 @@ export async function addOrChangeStoragePlan(priceId: string) {
 
     if (existingStorage) {
       // Já existe - alterar plano
-      console.log('Storage já existe, alterando plano...');
       return await changeStoragePlan(priceId);
     } else {
       // Não existe - criar novo
-      console.log('Storage não existe, criando subscription separada...');
       return await createStorageSubscription(priceId);
     }
   } catch (error) {
@@ -1658,6 +1640,448 @@ export async function updateSubscriptionPrice(subscriptionId: string, newPriceId
     return { success: true };
   } catch (error) {
     console.error('Erro ao atualizar price da subscription:', error);
+    throw error;
+  }
+}
+
+// ==========================================
+// GERENCIAMENTO DE INFOZAP E IA
+// ==========================================
+
+/**
+ * Busca a subscription de InfoZap (canais WhatsApp)
+ */
+export async function getInfoZapSubscription() {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      throw new Error('Customer ID não configurado');
+    }
+
+    const infozapProductId = 'prod_T9SqvByfpsLwI8';
+
+    // Buscar todas as subscriptions
+    const subscriptions = await stripe.subscriptions.list({
+      customer: customerId,
+      status: 'active',
+      limit: 100,
+    });
+
+    // Encontrar subscription do InfoZap
+    const infozapSub = subscriptions.data.find(sub =>
+      sub.items.data.some(item => item.price.product === infozapProductId)
+    );
+
+    if (!infozapSub) {
+      return { hasSubscription: false, subscription: null };
+    }
+
+    // Buscar detalhes completos
+    const subscription = await stripe.subscriptions.retrieve(infozapSub.id, {
+      expand: ['items.data.price.product']
+    });
+
+    return {
+      hasSubscription: true,
+      subscription: {
+        id: subscription.id,
+        status: subscription.status,
+        current_period_end: (subscription as any).current_period_end,
+        current_period_start: (subscription as any).current_period_start,
+        cancel_at_period_end: (subscription as any).cancel_at_period_end,
+        items: subscription.items.data.map(item => ({
+          id: item.id,
+          price: {
+            id: item.price.id,
+            nickname: item.price.nickname,
+            unit_amount: item.price.unit_amount,
+            recurring: item.price.recurring,
+            product: item.price.product,
+          },
+          quantity: item.quantity
+        }))
+      }
+    };
+  } catch (error) {
+    console.error('Erro ao buscar subscription InfoZap:', error);
+    throw error;
+  }
+}
+
+/**
+ * Busca a subscription de IA
+ */
+export async function getIASubscription() {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      throw new Error('Customer ID não configurado');
+    }
+
+    const iaProductId = 'prod_TA8gkanW3rgytK';
+
+    // Buscar todas as subscriptions
+    const subscriptions = await stripe.subscriptions.list({
+      customer: customerId,
+      status: 'active',
+      limit: 100,
+    });
+
+    // Encontrar subscription da IA
+    const iaSub = subscriptions.data.find(sub =>
+      sub.items.data.some(item => item.price.product === iaProductId)
+    );
+
+    if (!iaSub) {
+      return { hasSubscription: false, subscription: null };
+    }
+
+    // Buscar detalhes completos
+    const subscription = await stripe.subscriptions.retrieve(iaSub.id, {
+      expand: ['items.data.price.product']
+    });
+
+    return {
+      hasSubscription: true,
+      subscription: {
+        id: subscription.id,
+        status: subscription.status,
+        current_period_end: (subscription as any).current_period_end,
+        current_period_start: (subscription as any).current_period_start,
+        cancel_at_period_end: (subscription as any).cancel_at_period_end,
+        items: subscription.items.data.map(item => ({
+          id: item.id,
+          price: {
+            id: item.price.id,
+            nickname: item.price.nickname,
+            unit_amount: item.price.unit_amount,
+            recurring: item.price.recurring,
+            product: item.price.product,
+          },
+          quantity: item.quantity
+        }))
+      }
+    };
+  } catch (error) {
+    console.error('Erro ao buscar subscription IA:', error);
+    throw error;
+  }
+}
+
+/**
+ * Adiciona 1 quantidade à subscription de InfoZap
+ * Se não existir subscription, cria uma nova
+ */
+export async function addInfoZapChannel(priceId: string) {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      throw new Error('Customer ID não configurado');
+    }
+
+    // Verificar se já existe subscription
+    const { hasSubscription, subscription } = await getInfoZapSubscription();
+
+    if (hasSubscription && subscription) {
+      // Já existe - aumentar quantidade
+      const item = subscription.items[0];
+      const currentQuantity = item.quantity || 0;
+
+      await stripe.subscriptionItems.update(item.id, {
+        quantity: currentQuantity + 1,
+        proration_behavior: 'create_prorations',
+      });
+
+      return {
+        success: true,
+        subscriptionId: subscription.id,
+        quantity: currentQuantity + 1,
+      };
+    } else {
+      // Não existe - criar nova subscription
+      const customer = await stripe.customers.retrieve(customerId);
+
+      if (customer.deleted) {
+        throw new Error('Customer foi deletado');
+      }
+
+      const defaultPaymentMethod = customer.invoice_settings.default_payment_method;
+
+      if (!defaultPaymentMethod) {
+        throw new Error('Nenhum método de pagamento padrão configurado');
+      }
+
+      const newSubscription = await stripe.subscriptions.create({
+        customer: customerId,
+        items: [{ price: priceId, quantity: 1 }],
+        default_payment_method: defaultPaymentMethod as string,
+        payment_behavior: 'error_if_incomplete',
+        expand: ['latest_invoice.payment_intent'],
+        metadata: {
+          type: 'infozap',
+          product_id: 'prod_T9SqvByfpsLwI8'
+        }
+      });
+
+      return {
+        success: true,
+        subscriptionId: newSubscription.id,
+        quantity: 1,
+      };
+    }
+  } catch (error) {
+    console.error('Erro ao adicionar canal InfoZap:', error);
+    throw error;
+  }
+}
+
+/**
+ * Remove 1 quantidade da subscription de InfoZap
+ * Se quantidade chegar a 0, cancela a subscription
+ */
+export async function removeInfoZapChannel() {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      throw new Error('Customer ID não configurado');
+    }
+
+    const { hasSubscription, subscription } = await getInfoZapSubscription();
+
+    if (!hasSubscription || !subscription) {
+      throw new Error('Subscription InfoZap não encontrada');
+    }
+
+    const item = subscription.items[0];
+    const currentQuantity = item.quantity || 0;
+
+    if (currentQuantity <= 1) {
+      // Se é o último canal, cancelar subscription
+      await stripe.subscriptions.update(subscription.id, {
+        cancel_at_period_end: true,
+      });
+
+      return {
+        success: true,
+        subscriptionId: subscription.id,
+        quantity: 0,
+        cancelled: true,
+      };
+    } else {
+      // Diminuir quantidade
+      await stripe.subscriptionItems.update(item.id, {
+        quantity: currentQuantity - 1,
+        proration_behavior: 'create_prorations',
+      });
+
+      return {
+        success: true,
+        subscriptionId: subscription.id,
+        quantity: currentQuantity - 1,
+        cancelled: false,
+      };
+    }
+  } catch (error) {
+    console.error('Erro ao remover canal InfoZap:', error);
+    throw error;
+  }
+}
+
+/**
+ * Adiciona 1 quantidade à subscription de IA
+ * Se não existir subscription, cria uma nova
+ */
+export async function addIAChannel(priceId: string) {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      throw new Error('Customer ID não configurado');
+    }
+
+    // Verificar se já existe subscription
+    const { hasSubscription, subscription } = await getIASubscription();
+
+    if (hasSubscription && subscription) {
+      // Já existe - aumentar quantidade
+      const item = subscription.items[0];
+      const currentQuantity = item.quantity || 0;
+
+      await stripe.subscriptionItems.update(item.id, {
+        quantity: currentQuantity + 1,
+        proration_behavior: 'create_prorations',
+      });
+
+      return {
+        success: true,
+        subscriptionId: subscription.id,
+        quantity: currentQuantity + 1,
+      };
+    } else {
+      // Não existe - criar nova subscription
+      const customer = await stripe.customers.retrieve(customerId);
+
+      if (customer.deleted) {
+        throw new Error('Customer foi deletado');
+      }
+
+      const defaultPaymentMethod = customer.invoice_settings.default_payment_method;
+
+      if (!defaultPaymentMethod) {
+        throw new Error('Nenhum método de pagamento padrão configurado');
+      }
+
+      const newSubscription = await stripe.subscriptions.create({
+        customer: customerId,
+        items: [{ price: priceId, quantity: 1 }],
+        default_payment_method: defaultPaymentMethod as string,
+        payment_behavior: 'error_if_incomplete',
+        expand: ['latest_invoice.payment_intent'],
+        metadata: {
+          type: 'ia',
+          product_id: 'prod_TA8gkanW3rgytK'
+        }
+      });
+
+      return {
+        success: true,
+        subscriptionId: newSubscription.id,
+        quantity: 1,
+      };
+    }
+  } catch (error) {
+    console.error('Erro ao adicionar canal IA:', error);
+    throw error;
+  }
+}
+
+/**
+ * Remove 1 quantidade da subscription de IA
+ * Se quantidade chegar a 0, cancela a subscription
+ */
+export async function removeIAChannel() {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      throw new Error('Customer ID não configurado');
+    }
+
+    const { hasSubscription, subscription } = await getIASubscription();
+
+    if (!hasSubscription || !subscription) {
+      throw new Error('Subscription IA não encontrada');
+    }
+
+    const item = subscription.items[0];
+    const currentQuantity = item.quantity || 0;
+
+    if (currentQuantity <= 1) {
+      // Se é o último canal, cancelar subscription
+      await stripe.subscriptions.update(subscription.id, {
+        cancel_at_period_end: true,
+      });
+
+      return {
+        success: true,
+        subscriptionId: subscription.id,
+        quantity: 0,
+        cancelled: true,
+      };
+    } else {
+      // Diminuir quantidade
+      await stripe.subscriptionItems.update(item.id, {
+        quantity: currentQuantity - 1,
+        proration_behavior: 'create_prorations',
+      });
+
+      return {
+        success: true,
+        subscriptionId: subscription.id,
+        quantity: currentQuantity - 1,
+        cancelled: false,
+      };
+    }
+  } catch (error) {
+    console.error('Erro ao remover canal IA:', error);
+    throw error;
+  }
+}
+
+/**
+ * Busca os preços disponíveis para InfoZap
+ */
+export async function getInfoZapPrices() {
+  try {
+    const productId = 'prod_T9SqvByfpsLwI8';
+
+    const prices = await stripe.prices.list({
+      product: productId,
+      active: true,
+      limit: 100,
+    });
+
+    const product = await stripe.products.retrieve(productId);
+
+    return {
+      product: {
+        id: product.id,
+        name: product.name,
+        description: product.description,
+        metadata: product.metadata,
+      },
+      prices: prices.data.map(price => ({
+        id: price.id,
+        nickname: price.nickname,
+        unit_amount: price.unit_amount,
+        currency: price.currency,
+        recurring: price.recurring,
+        metadata: price.metadata,
+      }))
+    };
+  } catch (error) {
+    console.error('Erro ao buscar preços InfoZap:', error);
+    throw error;
+  }
+}
+
+/**
+ * Busca os preços disponíveis para IA
+ */
+export async function getIAPrices() {
+  try {
+    const productId = 'prod_TA8gkanW3rgytK';
+
+    const prices = await stripe.prices.list({
+      product: productId,
+      active: true,
+      limit: 100,
+    });
+
+    const product = await stripe.products.retrieve(productId);
+
+    return {
+      product: {
+        id: product.id,
+        name: product.name,
+        description: product.description,
+        metadata: product.metadata,
+      },
+      prices: prices.data.map(price => ({
+        id: price.id,
+        nickname: price.nickname,
+        unit_amount: price.unit_amount,
+        currency: price.currency,
+        recurring: price.recurring,
+        metadata: price.metadata,
+      }))
+    };
+  } catch (error) {
+    console.error('Erro ao buscar preços IA:', error);
     throw error;
   }
 }

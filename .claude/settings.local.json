@@ -16,7 +16,8 @@
       "Bash(rm:*)",
       "Bash(git rm:*)",
       "Bash(netstat:*)",
-      "Bash(findstr:*)"
+      "Bash(findstr:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": []
