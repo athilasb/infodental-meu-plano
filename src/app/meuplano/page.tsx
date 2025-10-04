@@ -204,6 +204,8 @@ interface Channel {
   ia: boolean;
   status: 'ativo' | 'cancelado' | 'acontratar' | 'pendente';
   is_billable: boolean;
+  cancel_at_period_end?: boolean;
+  cancel_at?: number | null;
 }
 
 interface Seat {
@@ -547,7 +549,7 @@ export default function MeuPlano() {
       // IA está ativa se: ia_ativa === 1 (campo da API InfoDental)
       // O Stripe é consultado para verificar se ainda está ativa (ia_active_in_stripe)
       ia: ch.ia_ativa === 1 && (ch.ia_active_in_stripe !== false),
-      status: ch.status === 'active' ? 'ativo' : ch.status === 'cancelled' ? 'cancelado' : ch.status === 'acontratar' ? 'acontratar' : 'pendente',
+      status: (ch.status === 'active' ? 'ativo' : ch.status === 'cancelled' ? 'cancelado' : ch.status === 'acontratar' ? 'acontratar' : 'pendente') as Channel['status'],
       is_billable: false, // Será calculado abaixo
     }));
 

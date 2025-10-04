@@ -212,10 +212,10 @@ export function useInfoZapChannels() {
         const [infozapStatus, iaStatus] = await Promise.all([
           apiChannel.infozap_stripe_si
             ? checkSubscriptionStatus(apiChannel.infozap_stripe_si)
-            : Promise.resolve({ exists: false, active: false, cancel_at_period_end: false, current_period_end: null }),
+            : Promise.resolve({ exists: false, active: false, cancel_at_period_end: false, current_period_end: null, cancel_at: null }),
           apiChannel.ia_stripe_si
             ? checkSubscriptionStatus(apiChannel.ia_stripe_si)
-            : Promise.resolve({ exists: false, active: false, cancel_at_period_end: false, current_period_end: null }),
+            : Promise.resolve({ exists: false, active: false, cancel_at_period_end: false, current_period_end: null, cancel_at: null }),
         ]);
 
         const assinaturaStatus = apiChannel.assinatura_status || 'contratado';
