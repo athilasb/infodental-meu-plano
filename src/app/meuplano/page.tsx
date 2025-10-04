@@ -5,6 +5,8 @@ import { Input, Select } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { getStorageProduct, getCurrentPlan, getCurrentStorage, getUpcomingInvoice, addStorageAddon, removeStorageAddon, createSubscription, updateSubscription, cancelSubscription, reactivateSubscription, getInvoices, getCustomerData, updateCustomerData, applyCouponToSubscription, removeCouponFromSubscription, validateCoupon } from "@/app/actions/stripe";
+import { useInfoZapChannels } from "@/lib/useInfoZapChannels";
+import { updateChannelTitle } from "@/app/actions/infodental";
 import Swal from 'sweetalert2';
 import ReactSelect, { components, SingleValue } from 'react-select';
 import { Icon } from '@iconify/react';
@@ -200,7 +202,7 @@ interface Channel {
   label: string;
   created_at: number;
   ia: boolean;
-  status: string;
+  status: 'ativo' | 'cancelado' | 'acontratar' | 'pendente';
   is_billable: boolean;
 }
 
@@ -377,6 +379,9 @@ export default function MeuPlano() {
   const [currentPlan, setCurrentPlan] = useState<CurrentPlanData | null>(null);
   const [loadingPlan, setLoadingPlan] = useState(true);
 
+  // Verificar se tem plano ativo
+  const hasActivePlan = currentPlan?.subscription !== null && currentPlan?.subscription !== undefined;
+
   // Current storage subscription from Stripe (subscription separada)
   const [currentStorage, setCurrentStorage] = useState<any>(null);
   const [loadingCurrentStorage, setLoadingCurrentStorage] = useState(true);
@@ -520,27 +525,43 @@ export default function MeuPlano() {
   const [coupon, setCoupon] = useState<Coupon | null>(null);
   const [couponError, setCouponError] = useState<string | null>(null);
 
-  // canais whatsapp
-  const [channels, setChannels] = useState<Channel[]>([
-    {
-      id: "c1",
-      phone: "+55 11 90000-0001",
-      label: "Recepção",
-      created_at: new Date(2024, 9, 1).getTime(),
-      ia: false,
-      status: "ativo",
-      is_billable: false,
-    },
-    {
-      id: "c2",
-      phone: "+55 11 90000-0002",
-      label: "Pós-venda",
-      created_at: new Date(2024, 10, 20).getTime(),
-      ia: true,
-      status: "ativo",
-      is_billable: true,
-    },
-  ]);
+  // canais whatsapp - integração com InfoZap
+  const {
+    channels: infozapChannels,
+    loading: loadingInfoZap,
+    error: errorInfoZap,
+    addChannel: addInfoZapChannel,
+    removeChannel: removeInfoZapChannel,
+    reactivateChannel: reactivateInfoZapChannel,
+    toggleIA: toggleInfoZapIA,
+  } = useInfoZapChannels();
+
+  // Mapear canais InfoZap para o formato esperado pelo componente
+  const channels = useMemo<Channel[]>(() => {
+    // Converter canais da API para o formato local
+    const mappedChannels = infozapChannels.map((ch) => ({
+      id: String(ch.id),
+      phone: "+55 11 9xxxx-xxxx", // API não retorna telefone
+      label: ch.titulo,
+      created_at: new Date(ch.data).getTime(),
+      // IA está ativa se: ia_ativa === 1 (campo da API InfoDental)
+      // O Stripe é consultado para verificar se ainda está ativa (ia_active_in_stripe)
+      ia: ch.ia_ativa === 1 && (ch.ia_active_in_stripe !== false),
+      status: ch.status === 'active' ? 'ativo' : ch.status === 'cancelled' ? 'cancelado' : ch.status === 'acontratar' ? 'acontratar' : 'pendente',
+      is_billable: false, // Será calculado abaixo
+    }));
+
+    // Calcular is_billable baseado na lógica de cobertura
+    const active = mappedChannels
+      .filter((c) => c.status === "ativo")
+      .sort((a, b) => a.created_at - b.created_at);
+    const coveredIds = new Set(active.slice(0, plan.included_whatsapp_slots).map((c) => c.id));
+
+    return mappedChannels.map((c) => ({
+      ...c,
+      is_billable: c.status === "ativo" ? !coveredIds.has(c.id) : false,
+    }));
+  }, [infozapChannels, plan.included_whatsapp_slots]);
 
   // bird id
   const [seats, setSeats] = useState<Seat[]>([
@@ -555,6 +576,7 @@ export default function MeuPlano() {
   const [showAddChannel, setShowAddChannel] = useState(false);
   const [newChannelIA, setNewChannelIA] = useState(false);
   const [newChannelLabel, setNewChannelLabel] = useState("");
+  const [contractingChannelId, setContractingChannelId] = useState<string | null>(null);
   const [cancelId, setCancelId] = useState<string | null>(null);
   const [buySeatOpen, setBuySeatOpen] = useState(false);
   const [assignSeatId, setAssignSeatId] = useState<string | null>(null);
@@ -563,6 +585,13 @@ export default function MeuPlano() {
   const [addStorageOpen, setAddStorageOpen] = useState(false);
   const [editCustomerOpen, setEditCustomerOpen] = useState(false);
   const [tempCustomer, setTempCustomer] = useState<Customer>(customer);
+
+  // Loading state para operações de canal
+  const [channelOperationLoading, setChannelOperationLoading] = useState<string | null>(null);
+
+  // Estado para edição de título
+  const [editingChannelId, setEditingChannelId] = useState<string | null>(null);
+  const [editingChannelTitle, setEditingChannelTitle] = useState<string>("");
 
   // Carregar produto de armazenamento do Stripe
   useEffect(() => {
@@ -719,18 +748,6 @@ export default function MeuPlano() {
   const [changePlanConfirm, setChangePlanConfirm] = useState(false);
   const [activeTab, setActiveTab] = useState<"overview" | "invoices" | "payment">("overview");
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
-
-  // cobertura determinística (fila por created_at)
-  useEffect(() => {
-    const active = channels
-      .filter((c) => c.status === "ativo")
-      .sort((a, b) => a.created_at - b.created_at);
-    const coveredIds = new Set(active.slice(0, plan.included_whatsapp_slots).map((c) => c.id));
-    setChannels((prev) => prev.map((c) => ({
-      ...c,
-      is_billable: c.status === "ativo" ? !coveredIds.has(c.id) : false,
-    })));
-  }, [channels.length, plan.included_whatsapp_slots]);
 
   // preço do plano (mensal, trimestral ou anual, aplicando cupom)
   const planBase = plan.periodicidade === "mensal"
@@ -1094,35 +1111,363 @@ export default function MeuPlano() {
     setChangePlanConfirm(false);
   }
 
-  function addChannel() {
-    if (!newChannelLabel.trim()) return;
-    const id = `c${channels.length + 1}`;
-    const ch: Channel = {
-      id,
-      phone: "+55 11 9xxxx-xxxx",
-      label: newChannelLabel.trim(),
-      created_at: new Date().getTime(),
-      ia: newChannelIA,
-      status: "ativo",
-      is_billable: true,
-    };
-    setChannels((prev) => [...prev, ch]);
-    setNewChannelIA(false);
-    setNewChannelLabel("");
+  async function addChannel() {
+    const isChannelZero = contractingChannelId === "0";
+
+    // Canal 0 não precisa de nome
+    if (!isChannelZero && !newChannelLabel.trim()) {
+      Swal.fire({
+        icon: 'warning',
+        title: 'Nome obrigatório',
+        text: 'Por favor, digite um nome para o canal.',
+        confirmButtonColor: '#f59e0b',
+        customClass: {
+          popup: 'rounded-2xl',
+        }
+      });
+      return;
+    }
+
+    // Calcular custo
+    const totalCost = isChannelZero
+      ? PRICE_IA  // Canal 0 é apenas IA
+      : PRICE_WHATS + (newChannelIA ? PRICE_IA : 0);
+
+    // Loading
     setShowAddChannel(false);
+    Swal.fire({
+      title: 'Criando canal...',
+      html: getSwalLoadingHtml(),
+      allowOutsideClick: false,
+      allowEscapeKey: false,
+      showConfirmButton: false,
+      customClass: {
+        popup: 'rounded-2xl',
+      }
+    });
+
+    const success = await addInfoZapChannel({
+      channelId: contractingChannelId ? Number(contractingChannelId) : 1,
+      titulo: isChannelZero ? 'IA InfoZap' : newChannelLabel.trim(),
+      withIA: isChannelZero ? true : newChannelIA,
+    });
+
+    if (success) {
+      setNewChannelIA(false);
+      setNewChannelLabel("");
+      setContractingChannelId(null);
+      Swal.fire({
+        icon: 'success',
+        title: isChannelZero ? 'IA contratada!' : 'Canal criado!',
+        html: `
+          <p class="text-gray-700 mb-3">${isChannelZero ? 'A IA foi contratada com sucesso!' : `O canal <strong>${newChannelLabel.trim()}</strong> foi criado com sucesso!`}</p>
+          <div class="text-left bg-gray-50 p-4 rounded-lg">
+            <p class="text-sm text-gray-600 mb-2"><strong>Detalhes:</strong></p>
+            ${isChannelZero ? '' : `<p class="text-sm text-gray-700">• WhatsApp: ${money(PRICE_WHATS)}/mês</p>`}
+            ${(newChannelIA || isChannelZero) ? `<p class="text-sm text-gray-700">• IA: ${money(PRICE_IA)}/mês</p>` : ''}
+            <p class="text-sm text-gray-700 mt-2"><strong>Total: ${money(totalCost)}/mês</strong></p>
+          </div>
+        `,
+        confirmButtonColor: '#10b981',
+        customClass: {
+          popup: 'rounded-2xl',
+        }
+      });
+    } else {
+      Swal.fire({
+        icon: 'error',
+        title: 'Erro!',
+        text: 'Não foi possível adicionar o canal. Tente novamente.',
+        confirmButtonColor: '#ef4444',
+        customClass: {
+          popup: 'rounded-2xl',
+        }
+      });
+    }
   }
 
-  function toggleIA(id: string) {
-    setChannels((prev) => prev.map((c) => (c.id === id ? { ...c, ia: !c.ia } : c)));
+  async function toggleIA(id: string) {
+    const channel = channels.find((c) => c.id === id);
+    if (!channel) return;
+
+    setChannelOperationLoading(`ia-${id}`);
+
+    // Confirmação
+    const result = await Swal.fire({
+      title: channel.ia ? 'Remover IA?' : 'Ativar IA?',
+      text: channel.ia
+        ? `Deseja remover a IA do canal ${channel.label}? Isso irá reduzir sua fatura mensal em ${money(PRICE_IA)}.`
+        : `Deseja ativar a IA no canal ${channel.label}? Isso irá adicionar ${money(PRICE_IA)}/mês à sua fatura.`,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonColor: channel.ia ? '#6b7280' : '#10b981',
+      cancelButtonColor: '#d1d5db',
+      confirmButtonText: channel.ia ? 'Sim, remover IA' : 'Sim, ativar IA',
+      cancelButtonText: 'Cancelar',
+      customClass: {
+        popup: 'rounded-2xl',
+      }
+    });
+
+    if (!result.isConfirmed) {
+      setChannelOperationLoading(null);
+      return;
+    }
+
+    // Loading
+    Swal.fire({
+      title: channel.ia ? 'Removendo IA...' : 'Ativando IA...',
+      html: getSwalLoadingHtml(),
+      allowOutsideClick: false,
+      allowEscapeKey: false,
+      showConfirmButton: false,
+      customClass: {
+        popup: 'rounded-2xl',
+      }
+    });
+
+    const success = await toggleInfoZapIA(Number(id), channel.ia);
+
+    setChannelOperationLoading(null);
+
+    if (success) {
+      Swal.fire({
+        icon: 'success',
+        title: channel.ia ? 'IA removida!' : 'IA ativada!',
+        text: `A IA foi ${channel.ia ? 'removida' : 'ativada'} no canal ${channel.label}.`,
+        confirmButtonColor: '#10b981',
+        customClass: {
+          popup: 'rounded-2xl',
+        }
+      });
+    } else {
+      Swal.fire({
+        icon: 'error',
+        title: 'Erro!',
+        text: 'Não foi possível alterar a IA do canal.',
+        confirmButtonColor: '#ef4444',
+        customClass: {
+          popup: 'rounded-2xl',
+        }
+      });
+    }
   }
 
-  function cancelChannel(id: string) {
-    setChannels((prev) => prev.map((c) => (c.id === id ? { ...c, status: "cancelado", ia: false } : c)));
-    setCancelId(null);
+  async function cancelChannel(id: string) {
+    const channel = channels.find((c) => c.id === id);
+    if (!channel) return;
+
+    setChannelOperationLoading(`cancel-${id}`);
+
+    // Calcular valores
+    const whatsappCost = channel.is_billable ? PRICE_WHATS : 0;
+    const iaCost = channel.ia ? PRICE_IA : 0;
+    const totalSavings = whatsappCost + iaCost;
+
+    // Confirmação
+    const result = await Swal.fire({
+      title: 'Cancelar canal?',
+      html: `
+        <p class="text-gray-700 mb-3">Deseja cancelar o canal <strong>${channel.label}</strong>?</p>
+        ${totalSavings > 0 ? `<p class="text-sm text-gray-600">Isso irá reduzir sua fatura mensal em <strong>${money(totalSavings)}</strong>.</p>` : ''}
+        <p class="text-sm text-orange-600 mt-3">⚠️ O canal será desativado ao final do período de cobrança atual.</p>
+      `,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: '#ef4444',
+      cancelButtonColor: '#d1d5db',
+      confirmButtonText: 'Sim, cancelar canal',
+      cancelButtonText: 'Voltar',
+      customClass: {
+        popup: 'rounded-2xl',
+      }
+    });
+
+    if (!result.isConfirmed) {
+      setCancelId(null);
+      setChannelOperationLoading(null);
+      return;
+    }
+
+    // Loading
+    Swal.fire({
+      title: 'Cancelando canal...',
+      html: getSwalLoadingHtml(),
+      allowOutsideClick: false,
+      allowEscapeKey: false,
+      showConfirmButton: false,
+      customClass: {
+        popup: 'rounded-2xl',
+      }
+    });
+
+    const success = await removeInfoZapChannel(Number(id), channel.ia);
+
+    setChannelOperationLoading(null);
+
+    if (success) {
+      setCancelId(null);
+      Swal.fire({
+        icon: 'success',
+        title: 'Canal cancelado!',
+        text: 'O canal foi cancelado e será desativado ao final do período de cobrança.',
+        confirmButtonColor: '#10b981',
+        customClass: {
+          popup: 'rounded-2xl',
+        }
+      });
+    } else {
+      Swal.fire({
+        icon: 'error',
+        title: 'Erro!',
+        text: 'Não foi possível cancelar o canal. Tente novamente.',
+        confirmButtonColor: '#ef4444',
+        customClass: {
+          popup: 'rounded-2xl',
+        }
+      });
+    }
   }
 
-  function reactivateChannel(id: string) {
-    setChannels((prev) => prev.map((c) => (c.id === id ? { ...c, status: "ativo" } : c)));
+  async function reactivateChannel(id: string) {
+    const channel = channels.find((c) => c.id === id);
+    if (!channel) return;
+
+    setChannelOperationLoading(`reactivate-${id}`);
+
+    // Perguntar se quer reativar com IA
+    const result = await Swal.fire({
+      title: 'Reativar canal?',
+      html: `
+        <p class="text-gray-700 mb-4">Deseja reativar o canal <strong>${channel.label}</strong>?</p>
+        <div class="text-left bg-gray-50 p-4 rounded-lg mb-4">
+          <p class="text-sm text-gray-600 mb-2"><strong>Custos:</strong></p>
+          <p class="text-sm text-gray-700">• WhatsApp: ${money(PRICE_WHATS)}/mês</p>
+          <p class="text-sm text-gray-700">• IA (opcional): ${money(PRICE_IA)}/mês</p>
+        </div>
+        <label class="flex items-center justify-center gap-2 cursor-pointer">
+          <input type="checkbox" id="reactivate-with-ia" ${channel.ia ? 'checked' : ''} class="w-4 h-4 text-krooa-green bg-gray-100 border-gray-300 rounded focus:ring-krooa-green focus:ring-2">
+          <span class="text-sm text-gray-700">Reativar com IA</span>
+        </label>
+      `,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonColor: '#0ea5e9',
+      cancelButtonColor: '#d1d5db',
+      confirmButtonText: 'Sim, reativar canal',
+      cancelButtonText: 'Cancelar',
+      customClass: {
+        popup: 'rounded-2xl',
+      },
+      preConfirm: () => {
+        const withIA = (document.getElementById('reactivate-with-ia') as HTMLInputElement)?.checked || false;
+        return { withIA };
+      }
+    });
+
+    if (!result.isConfirmed) {
+      setChannelOperationLoading(null);
+      return;
+    }
+
+    const withIA = result.value?.withIA || false;
+
+    // Calcular custo total
+    const totalCost = PRICE_WHATS + (withIA ? PRICE_IA : 0);
+
+    // Loading
+    Swal.fire({
+      title: 'Reativando canal...',
+      html: getSwalLoadingHtml(),
+      allowOutsideClick: false,
+      allowEscapeKey: false,
+      showConfirmButton: false,
+      customClass: {
+        popup: 'rounded-2xl',
+      }
+    });
+
+    const success = await reactivateInfoZapChannel({
+      channelId: Number(id),
+      withIA,
+    });
+
+    setChannelOperationLoading(null);
+
+    if (success) {
+      Swal.fire({
+        icon: 'success',
+        title: 'Canal reativado!',
+        html: `
+          <p class="text-gray-700 mb-3">O canal <strong>${channel.label}</strong> foi reativado com sucesso!</p>
+          <p class="text-sm text-gray-600">Custo mensal: <strong>${money(totalCost)}</strong></p>
+        `,
+        confirmButtonColor: '#10b981',
+        customClass: {
+          popup: 'rounded-2xl',
+        }
+      });
+    } else {
+      Swal.fire({
+        icon: 'error',
+        title: 'Erro!',
+        text: 'Não foi possível reativar o canal. Tente novamente.',
+        confirmButtonColor: '#ef4444',
+        customClass: {
+          popup: 'rounded-2xl',
+        }
+      });
+    }
+  }
+
+  async function saveChannelTitle(channelId: string) {
+    if (!editingChannelTitle.trim()) {
+      Swal.fire({
+        icon: 'warning',
+        title: 'Nome obrigatório',
+        text: 'Por favor, digite um nome para o canal.',
+        confirmButtonColor: '#f59e0b',
+        customClass: {
+          popup: 'rounded-2xl',
+        }
+      });
+      return;
+    }
+
+    try {
+      setChannelOperationLoading(`edit-title-${channelId}`);
+
+      await updateChannelTitle(Number(channelId), editingChannelTitle.trim());
+
+      // Recarregar canais
+      window.location.reload();
+
+      setEditingChannelId(null);
+      setEditingChannelTitle("");
+
+      Swal.fire({
+        icon: 'success',
+        title: 'Título atualizado!',
+        text: 'O título do canal foi atualizado com sucesso.',
+        confirmButtonColor: '#10b981',
+        timer: 2000,
+        customClass: {
+          popup: 'rounded-2xl',
+        }
+      });
+    } catch (error) {
+      Swal.fire({
+        icon: 'error',
+        title: 'Erro!',
+        text: 'Não foi possível atualizar o título.',
+        confirmButtonColor: '#ef4444',
+        customClass: {
+          popup: 'rounded-2xl',
+        }
+      });
+    } finally {
+      setChannelOperationLoading(null);
+    }
   }
 
   function buySeat() {
@@ -1867,40 +2212,279 @@ export default function MeuPlano() {
             <section className="space-y-3">
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
                 <h2 className="text-base sm:text-lg font-semibold">Canais WhatsApp</h2>
-                <button onClick={() => setShowAddChannel(true)} className="rounded-xl bg-krooa-green px-4 py-2.5 text-sm font-bold text-krooa-dark hover:shadow-lg hover:scale-105 transition-all shadow-md">+ Canal de Comunicação </button>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-2">
-                {channels.map((c) => (
-                  <div key={c.id} className={`rounded-2xl border p-4 shadow-sm ${c.status === "cancelado" ? "border-neutral-200 bg-neutral-50 text-neutral-500" : "border-neutral-200 bg-white"}`}>
-                    <div className="flex items-start justify-between">
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${c.is_billable ? "bg-amber-100 text-amber-800" : "bg-emerald-50 text-emerald-700"}`}>{c.is_billable ? "Cobrado" : "Coberto pelo plano"}</span>
-                          <span className="text-sm text-neutral-500">{new Date(c.created_at).toLocaleDateString()}</span>
-                        </div>
-                        <div className="text-base font-medium">{c.label}</div>
-                        <div className="text-sm">{c.phone}</div>
-                        <div className="text-sm text-neutral-600">WhatsApp: {c.is_billable ? money(PRICE_WHATS) : money(0)} · IA: {c.ia ? money(PRICE_IA) : "—"}</div>
-                      </div>
-                      <div className="flex flex-col items-end gap-2">
-                        <div className="text-sm text-neutral-500">Total do canal</div>
-                        <div className="text-lg font-semibold">{money((c.is_billable ? PRICE_WHATS : 0) + (c.ia ? PRICE_IA : 0))}</div>
+              {loadingInfoZap ? (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {[1, 2].map((i) => (
+                    <div key={i} className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+                      <div className="space-y-3 animate-pulse">
                         <div className="flex gap-2">
-                          {c.status !== "cancelado" && (
-                            <button onClick={() => toggleIA(c.id)} className={`rounded-xl px-3 py-1.5 text-sm font-semibold transition-all ${c.ia ? "bg-gray-100 hover:bg-gray-200 text-gray-700" : "bg-krooa-green text-krooa-dark hover:shadow-md hover:scale-105 shadow-sm"}`}>{c.ia ? "Remover IA" : "Ativar IA"}</button>
-                          )}
-                          {c.status !== "cancelado" ? (
-                            <button onClick={() => setCancelId(c.id)} className="rounded-xl bg-gray-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-600 transition-colors">Cancelar</button>
-                          ) : (
-                            <button onClick={() => reactivateChannel(c.id)} className="rounded-xl bg-krooa-blue px-3 py-1.5 text-sm font-semibold text-white hover:bg-krooa-dark transition-colors">Reativar canal</button>
-                          )}
+                          <div className="h-5 w-24 bg-gray-200 rounded-full"></div>
+                          <div className="h-5 w-20 bg-gray-200 rounded"></div>
+                        </div>
+                        <div className="h-4 w-32 bg-gray-200 rounded"></div>
+                        <div className="h-4 w-36 bg-gray-200 rounded"></div>
+                        <div className="h-4 w-40 bg-gray-200 rounded"></div>
+                        <div className="flex gap-2 justify-end mt-4">
+                          <div className="h-8 w-24 bg-gray-200 rounded-xl"></div>
+                          <div className="h-8 w-20 bg-gray-200 rounded-xl"></div>
                         </div>
                       </div>
                     </div>
+                  ))}
+                </div>
+              ) : errorInfoZap ? (
+                <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-center">
+                  <Icon icon="mdi:alert-circle" className="w-12 h-12 text-red-500 mx-auto mb-3" />
+                  <h3 className="text-lg font-semibold text-red-900 mb-2">Erro ao carregar canais</h3>
+                  <p className="text-sm text-red-700 mb-4">{errorInfoZap.message}</p>
+                  <button
+                    onClick={() => window.location.reload()}
+                    className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 transition-colors"
+                  >
+                    Recarregar página
+                  </button>
+                </div>
+              ) : channels.length === 0 ? (
+                <div className="rounded-2xl border border-neutral-200 bg-white p-8 text-center">
+                  <Icon icon="mdi:message-outline" className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+                  <h3 className="text-lg font-semibold text-gray-700 mb-2">Nenhum canal cadastrado</h3>
+                  <p className="text-sm text-gray-600 mb-4">Adicione seu primeiro canal de comunicação para começar!</p>
+                  <button
+                    onClick={() => setShowAddChannel(true)}
+                    className="rounded-xl bg-krooa-green px-6 py-3 text-sm font-bold text-krooa-dark hover:shadow-lg hover:scale-105 transition-all shadow-md"
+                  >
+                    + Adicionar primeiro canal
+                  </button>
+                </div>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {channels.map((c) => (
+                  <div key={c.id} className={`rounded-2xl border p-4 shadow-sm ${c.status === "cancelado" ? "border-neutral-200 bg-neutral-50 text-neutral-500" : (c.status === "acontratar" && c.id !== "0") ? "border-dashed border-2 border-neutral-300 bg-neutral-50" : "border-neutral-200 bg-white"}`}>
+                    <div className="flex items-start justify-between">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {c.id === "0" ? (
+                            // Badge especial para canal apenas IA (canal 0 é sempre gratuito)
+                            c.ia ? (
+                              <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-800">
+                                Apenas IA
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-emerald-50 text-emerald-700">
+                                Coberto pelo plano
+                              </span>
+                            )
+                          ) : c.status === "acontratar" ? (
+                            // Outros canais disponíveis para contratar
+                            <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-800">
+                              Disponível para contratar
+                            </span>
+                          ) : (
+                            // Canais normais ativos/cancelados
+                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${c.is_billable ? "bg-amber-100 text-amber-800" : "bg-emerald-50 text-emerald-700"}`}>
+                              {c.is_billable ? "Cobrado" : "Coberto pelo plano"}
+                            </span>
+                          )}
+                          {c.status === "cancelado" && (
+                            <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-orange-100 text-orange-800">
+                              <Icon icon="mdi:alert-circle" className="w-3 h-3" />
+                              Cancelado
+                            </span>
+                          )}
+                          {(c.status !== "acontratar" || c.id === "0") && (
+                            <span className="text-sm text-neutral-500">{new Date(c.created_at).toLocaleDateString()}</span>
+                          )}
+                        </div>
+                        {c.cancel_at_period_end && c.cancel_at && (
+                          <div className="mt-2 rounded-lg bg-orange-50 border border-orange-200 px-3 py-2">
+                            <div className="flex items-center gap-2 text-sm text-orange-800">
+                              <Icon icon="mdi:clock-alert-outline" className="w-4 h-4" />
+                              <span className="font-medium">Cancelamento agendado para {fmtDate(new Date(c.cancel_at * 1000))}</span>
+                            </div>
+                          </div>
+                        )}
+                        {(c.status !== "acontratar" || c.id === "0") && (
+                          <div className="flex items-center gap-2">
+                            {editingChannelId === c.id ? (
+                              <>
+                                <input
+                                  type="text"
+                                  value={editingChannelTitle}
+                                  onChange={(e) => setEditingChannelTitle(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') saveChannelTitle(c.id);
+                                    if (e.key === 'Escape') { setEditingChannelId(null); setEditingChannelTitle(""); }
+                                  }}
+                                  className="text-base font-medium border border-krooa-green rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-krooa-green"
+                                  autoFocus
+                                />
+                                <button
+                                  onClick={() => saveChannelTitle(c.id)}
+                                  disabled={channelOperationLoading !== null}
+                                  className="text-krooa-green hover:text-krooa-dark"
+                                >
+                                  <Icon icon="mdi:check" className="w-5 h-5" />
+                                </button>
+                                <button
+                                  onClick={() => { setEditingChannelId(null); setEditingChannelTitle(""); }}
+                                  className="text-gray-500 hover:text-gray-700"
+                                >
+                                  <Icon icon="mdi:close" className="w-5 h-5" />
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <div className="text-base font-medium">{c.label}</div>
+                                <button
+                                  onClick={() => { setEditingChannelId(c.id); setEditingChannelTitle(c.label); }}
+                                  disabled={loadingInfoZap || channelOperationLoading !== null}
+                                  className="text-gray-400 hover:text-krooa-green transition-colors"
+                                  title="Editar título"
+                                >
+                                  <Icon icon="mdi:pencil" className="w-4 h-4" />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
+                        {c.status === "acontratar" && c.id !== "0" && (
+                          <div className="text-base font-medium">{c.label}</div>
+                        )}
+                        {c.id !== "0" && (c.status !== "acontratar" || c.id === "0") && <div className="text-sm">{c.phone}</div>}
+                        {(c.status !== "acontratar" || c.id === "0") && (
+                          <div className="text-sm text-neutral-600">
+                            {c.id === "0" ? (
+                              // Canal apenas IA
+                              <>Apenas IA: {c.ia ? money(PRICE_IA) : "Não contratada"}</>
+                            ) : (
+                              // Canal normal
+                              <>WhatsApp: {c.is_billable ? money(PRICE_WHATS) : money(0)} · IA: {c.ia ? money(PRICE_IA) : "—"}</>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex flex-col items-end gap-2">
+                        {c.status === "acontratar" && c.id !== "0" ? (
+                          // Canal disponível para contratar (exceto canal 0 que é sempre gratuito)
+                          <>
+                            <div className="text-sm text-neutral-600 mb-2">
+                              Adicione mais um canal WhatsApp
+                            </div>
+                            <button
+                              onClick={() => {
+                                if (!hasActivePlan && c.id !== "0") {
+                                  alert('Você precisa ter um plano ativo para contratar canais WhatsApp');
+                                  return;
+                                }
+                                setContractingChannelId(c.id);
+                                setShowAddChannel(true);
+                              }}
+                              disabled={loadingInfoZap || channelOperationLoading !== null || (!hasActivePlan && c.id !== "0")}
+                              className="rounded-xl bg-krooa-green px-4 py-2 text-sm font-bold text-krooa-dark hover:shadow-lg hover:scale-105 transition-all shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
+                              title={!hasActivePlan && c.id !== "0" ? 'Você precisa ter um plano ativo para contratar canais WhatsApp' : ''}
+                            >
+                              Contratar
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <div className="text-sm text-neutral-500">Total {c.id === "0" ? "IA" : "do canal"}</div>
+                            <div className="text-lg font-semibold">
+                              {c.id === "0"
+                                ? money(c.ia ? PRICE_IA : 0)
+                                : money((c.is_billable ? PRICE_WHATS : 0) + (c.ia ? PRICE_IA : 0))
+                              }
+                            </div>
+                            <div className="flex gap-2">
+                              {/* Canal ID 0 é especial: apenas IA, sem InfoZap */}
+                              {c.id === "0" ? (
+                                // Canal apenas IA - só mostra botão de toggle IA
+                                <button
+                                  onClick={() => {
+                                    // Bloquear apenas ao CONTRATAR IA (não ao cancelar ou reativar)
+                                    if (!hasActivePlan && !c.ia && !c.cancel_at_period_end) {
+                                      alert('Você precisa ter um plano ativo para contratar IA');
+                                      return;
+                                    }
+                                    toggleIA(c.id);
+                                  }}
+                                  disabled={loadingInfoZap || channelOperationLoading !== null || (!hasActivePlan && !c.ia && !c.cancel_at_period_end)}
+                                  className={`rounded-xl px-3 py-1.5 text-sm font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed ${c.cancel_at_period_end ? "bg-krooa-blue text-white hover:bg-krooa-dark" : c.ia ? "bg-gray-100 hover:bg-gray-200 text-gray-700" : "bg-krooa-green text-krooa-dark hover:shadow-md hover:scale-105 shadow-sm"}`}
+                                  title={!hasActivePlan && !c.ia && !c.cancel_at_period_end ? 'Você precisa ter um plano ativo para contratar IA' : ''}
+                                >
+                                  {channelOperationLoading === `ia-${c.id}` ? (
+                                    <span className="flex items-center gap-2">
+                                      <Icon icon="svg-spinners:180-ring" className="w-4 h-4" />
+                                      {c.cancel_at_period_end ? "Reativando..." : c.ia ? "Cancelando..." : "Ativando..."}
+                                    </span>
+                                  ) : (
+                                    c.cancel_at_period_end ? "Reativar IA" : c.ia ? "Cancelar IA" : "Contratar IA"
+                                  )}
+                                </button>
+                              ) : (
+                                // Canais normais - botões completos
+                                <>
+                                  {c.status !== "cancelado" && !c.cancel_at_period_end && (
+                                    <button
+                                      onClick={() => {
+                                        // Bloquear apenas ao ATIVAR IA (não ao remover)
+                                        if (!hasActivePlan && !c.ia) {
+                                          alert('Você precisa ter um plano ativo para contratar IA');
+                                          return;
+                                        }
+                                        toggleIA(c.id);
+                                      }}
+                                      disabled={loadingInfoZap || channelOperationLoading !== null || (!hasActivePlan && !c.ia)}
+                                      className={`rounded-xl px-3 py-1.5 text-sm font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed ${c.ia ? "bg-gray-100 hover:bg-gray-200 text-gray-700" : "bg-krooa-green text-krooa-dark hover:shadow-md hover:scale-105 shadow-sm"}`}
+                                      title={!hasActivePlan && !c.ia ? 'Você precisa ter um plano ativo para contratar IA' : ''}
+                                    >
+                                      {channelOperationLoading === `ia-${c.id}` ? (
+                                        <span className="flex items-center gap-2">
+                                          <Icon icon="svg-spinners:180-ring" className="w-4 h-4" />
+                                          {c.ia ? "Removendo..." : "Ativando..."}
+                                        </span>
+                                      ) : (
+                                        c.ia ? "Remover IA" : "Ativar IA"
+                                      )}
+                                    </button>
+                                  )}
+                                  {c.status !== "cancelado" && !c.cancel_at_period_end ? (
+                                    <button
+                                      onClick={() => setCancelId(c.id)}
+                                      disabled={loadingInfoZap || channelOperationLoading !== null}
+                                      className="rounded-xl bg-gray-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                      Cancelar
+                                    </button>
+                                  ) : (c.status === "cancelado" || c.cancel_at_period_end) && (
+                                    <button
+                                      onClick={() => reactivateChannel(c.id)}
+                                      disabled={loadingInfoZap || channelOperationLoading !== null}
+                                      className="rounded-xl bg-krooa-blue px-3 py-1.5 text-sm font-semibold text-white hover:bg-krooa-dark transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                      {channelOperationLoading === `reactivate-${c.id}` ? (
+                                        <span className="flex items-center gap-2">
+                                          <Icon icon="svg-spinners:180-ring" className="w-4 h-4" />
+                                          Reativando...
+                                        </span>
+                                      ) : (
+                                        "Reativar canal"
+                                      )}
+                                    </button>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </section>
 
             {/* BirdID */}
@@ -1912,7 +2496,20 @@ export default function MeuPlano() {
                     Cobrança mensal por usuário ativo. Assine documentos ilimitados sem custo adicional.
                   </p>
                 </div>
-                <button onClick={() => setBuySeatOpen(true)} className="rounded-xl bg-krooa-green px-4 py-2.5 text-sm font-bold text-krooa-dark hover:shadow-lg hover:scale-105 transition-all shadow-md">+ Certificado Digital</button>
+                <button
+                  onClick={() => {
+                    if (!hasActivePlan) {
+                      alert('Você precisa ter um plano ativo para contratar assinatura digital (BirdID)');
+                      return;
+                    }
+                    setBuySeatOpen(true);
+                  }}
+                  disabled={!hasActivePlan}
+                  className="rounded-xl bg-krooa-green px-4 py-2.5 text-sm font-bold text-krooa-dark hover:shadow-lg hover:scale-105 transition-all shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={!hasActivePlan ? 'Você precisa ter um plano ativo para contratar assinatura digital (BirdID)' : ''}
+                >
+                  + Certificado Digital
+                </button>
               </div>
               <div className="overflow-x-auto rounded-2xl border border-neutral-200 bg-white">
                 <table className="w-full min-w-[700px] text-sm">
@@ -2009,7 +2606,20 @@ export default function MeuPlano() {
                     </p>
                   )}
                 </div>
-                <button onClick={() => setAddStorageOpen(true)} className="rounded-xl bg-krooa-blue px-3 py-2 text-sm font-semibold text-white hover:bg-krooa-dark transition-colors">Alterar plano</button>
+                <button
+                  onClick={() => {
+                    if (!hasActivePlan) {
+                      alert('Você precisa ter um plano ativo para contratar armazenamento');
+                      return;
+                    }
+                    setAddStorageOpen(true);
+                  }}
+                  disabled={!hasActivePlan}
+                  className="rounded-xl bg-krooa-blue px-3 py-2 text-sm font-semibold text-white hover:bg-krooa-dark transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={!hasActivePlan ? 'Você precisa ter um plano ativo para contratar armazenamento' : ''}
+                >
+                  Alterar plano
+                </button>
               </div>
             </section>
           </>
@@ -2244,27 +2854,46 @@ export default function MeuPlano() {
       </div>
 
       {/* Modals */}
-      <Modal isOpen={showAddChannel} title="Adicionar canal" onClose={() => setShowAddChannel(false)}>
+      <Modal isOpen={showAddChannel} title={contractingChannelId === "0" ? "Contratar IA" : "Adicionar canal"} onClose={() => { setShowAddChannel(false); setContractingChannelId(null); }}>
         <div className="space-y-4">
-            <Input
-              placeholder="Nome do canal (ex: Recepção, Financeiro)"
-              value={newChannelLabel}
-              onChange={(e) => setNewChannelLabel(e.target.value)}
-              fullWidth
-            />
-            <Row label="WhatsApp" right={<span className="font-semibold">{money(PRICE_WHATS)}</span>} note="Sempre incluso no canal adicional" />
-            <Row label="IA (opcional)" right={
-              <label className="inline-flex items-center gap-2">
-                <input type="checkbox" className="h-4 w-4" checked={newChannelIA} onChange={(e) => setNewChannelIA(e.target.checked)} />
-                <span className="text-sm">{newChannelIA ? money(PRICE_IA) : money(0)}</span>
-              </label>
-            } />
-            <Divider />
-            <Row label="Total do canal" right={<span className="text-lg font-semibold">{money(PRICE_WHATS + (newChannelIA ? PRICE_IA : 0))}</span>} />
-            <div className="flex justify-end gap-2 pt-2">
-              <Button variant="ghost" onClick={() => setShowAddChannel(false)}>Cancelar</Button>
-              <Button variant="primary" onClick={addChannel} disabled={!newChannelLabel.trim()}>Contratar canal</Button>
-            </div>
+            {contractingChannelId === "0" ? (
+              // Modal para canal 0: apenas IA
+              <>
+                <p className="text-sm text-gray-600">
+                  Contrate IA para integração com seu plano. Este recurso não está vinculado a um canal WhatsApp específico.
+                </p>
+                <Row label="IA" right={<span className="font-semibold">{money(PRICE_IA)}</span>} note="Cobrado mensalmente" />
+                <Divider />
+                <Row label="Total mensal" right={<span className="text-lg font-semibold">{money(PRICE_IA)}</span>} />
+                <div className="flex justify-end gap-2 pt-2">
+                  <Button variant="ghost" onClick={() => { setShowAddChannel(false); setContractingChannelId(null); }}>Cancelar</Button>
+                  <Button variant="primary" onClick={addChannel}>Contratar IA</Button>
+                </div>
+              </>
+            ) : (
+              // Modal para canais normais: WhatsApp + IA opcional
+              <>
+                <Input
+                  placeholder="Nome do canal (ex: Recepção, Financeiro)"
+                  value={newChannelLabel}
+                  onChange={(e) => setNewChannelLabel(e.target.value)}
+                  fullWidth
+                />
+                <Row label="WhatsApp" right={<span className="font-semibold">{money(PRICE_WHATS)}</span>} note="Sempre incluso no canal adicional" />
+                <Row label="IA (opcional)" right={
+                  <label className="inline-flex items-center gap-2">
+                    <input type="checkbox" className="h-4 w-4" checked={newChannelIA} onChange={(e) => setNewChannelIA(e.target.checked)} />
+                    <span className="text-sm">{newChannelIA ? money(PRICE_IA) : money(0)}</span>
+                  </label>
+                } />
+                <Divider />
+                <Row label="Total do canal" right={<span className="text-lg font-semibold">{money(PRICE_WHATS + (newChannelIA ? PRICE_IA : 0))}</span>} />
+                <div className="flex justify-end gap-2 pt-2">
+                  <Button variant="ghost" onClick={() => { setShowAddChannel(false); setContractingChannelId(null); }}>Cancelar</Button>
+                  <Button variant="primary" onClick={addChannel} disabled={!newChannelLabel.trim()}>Contratar canal</Button>
+                </div>
+              </>
+            )}
         </div>
       </Modal>
 

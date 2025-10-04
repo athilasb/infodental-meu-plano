@@ -7,10 +7,15 @@ const API_TOKEN = process.env.NEXT_PUBLIC_INFOZAP_TOKEN || 'c20ef152b81e559ef400
 
 export interface InfoZapCreateParams {
   instance: string;
-  id_infozap: string;
+  id: number;
+  titulo: string;
   infozap_stripe_si: string;
   infozap_stripe_price: string;
   infozap_stripe_expiration: string;
+  assinatura_status: 'acontratar' | 'contratado' | 'cancelado';
+  ia_stripe_si?: string;
+  ia_stripe_price?: string;
+  ia_stripe_expiration?: string;
 }
 
 export interface InfoZapRemoveParams {
@@ -22,8 +27,6 @@ export interface InfoZapReactivateParams {
   instance: string;
   id_infozap: number;
   infozap_stripe_si: string;
-  infozap_stripe_price: string;
-  infozap_stripe_expiration: string;
 }
 
 /**
@@ -32,7 +35,7 @@ export interface InfoZapReactivateParams {
 export async function createInfoZap(params: InfoZapCreateParams): Promise<any> {
   try {
     const response = await fetch(MANAGER_URL, {
-      method: 'GET',
+      method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'User-Agent': 'InfoDental-MeuPlano/1.0'
@@ -40,11 +43,18 @@ export async function createInfoZap(params: InfoZapCreateParams): Promise<any> {
       body: JSON.stringify({
         token: API_TOKEN,
         instance: params.instance,
-        id_infozap: params.id_infozap,
         method: 'criar',
+        id: params.id,
+        titulo: params.titulo,
         infozap_stripe_si: params.infozap_stripe_si,
         infozap_stripe_price: params.infozap_stripe_price,
-        infozap_stripe_expiration: params.infozap_stripe_expiration
+        infozap_stripe_expiration: params.infozap_stripe_expiration,
+        assinatura_status: params.assinatura_status,
+        ...(params.ia_stripe_si && {
+          ia_stripe_si: params.ia_stripe_si,
+          ia_stripe_price: params.ia_stripe_price,
+          ia_stripe_expiration: params.ia_stripe_expiration
+        })
       })
     });
 
@@ -65,7 +75,7 @@ export async function createInfoZap(params: InfoZapCreateParams): Promise<any> {
 export async function removeInfoZap(params: InfoZapRemoveParams): Promise<any> {
   try {
     const response = await fetch(MANAGER_URL, {
-      method: 'GET',
+      method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'User-Agent': 'InfoDental-MeuPlano/1.0'
@@ -95,7 +105,7 @@ export async function removeInfoZap(params: InfoZapRemoveParams): Promise<any> {
 export async function reactivateInfoZap(params: InfoZapReactivateParams): Promise<any> {
   try {
     const response = await fetch(MANAGER_URL, {
-      method: 'GET',
+      method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'User-Agent': 'InfoDental-MeuPlano/1.0'
@@ -105,9 +115,7 @@ export async function reactivateInfoZap(params: InfoZapReactivateParams): Promis
         instance: params.instance,
         id_infozap: params.id_infozap,
         method: 'reativar',
-        infozap_stripe_si: params.infozap_stripe_si,
-        infozap_stripe_price: params.infozap_stripe_price,
-        infozap_stripe_expiration: params.infozap_stripe_expiration
+        infozap_stripe_si: params.infozap_stripe_si
       })
     });
 

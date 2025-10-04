@@ -308,6 +308,44 @@ export async function getStorageProduct() {
   }
 }
 
+/**
+ * Verifica se o customer tem um plano principal ativo
+ */
+export async function hasActivePlan(): Promise<boolean> {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      return false;
+    }
+
+    const mainPlanProductId = 'prod_T9AmlVw7Z608Rm';
+
+    // Buscar subscriptions ativas
+    const subscriptions = await stripe.subscriptions.list({
+      customer: customerId,
+      limit: 100,
+    });
+
+    // Verificar se existe subscription ativa com o plano principal
+    for (const sub of subscriptions.data) {
+      if (!['active', 'trialing', 'past_due', 'unpaid'].includes(sub.status)) {
+        continue;
+      }
+
+      const hasMainPlan = sub.items.data.some(item => item.price.product === mainPlanProductId);
+      if (hasMainPlan) {
+        return true;
+      }
+    }
+
+    return false;
+  } catch (error) {
+    console.error('Erro ao verificar plano ativo:', error);
+    return false;
+  }
+}
+
 export async function getCurrentPlan() {
   try {
     const customerId = process.env.STRIPE_CUSTOMER_ID;
@@ -1193,6 +1231,12 @@ export async function createStorageSubscription(priceId: string) {
 
     if (!customerId) {
       throw new Error('Customer ID não configurado');
+    }
+
+    // Verificar se tem plano principal ativo
+    const hasPlan = await hasActivePlan();
+    if (!hasPlan) {
+      throw new Error('Você precisa ter um plano ativo para contratar armazenamento');
     }
 
     // PRIMEIRO: Cancelar subscriptions incompletas (limpeza)
@@ -2082,6 +2126,453 @@ export async function getIAPrices() {
     };
   } catch (error) {
     console.error('Erro ao buscar preços IA:', error);
+    throw error;
+  }
+}
+
+/**
+ * Verifica o status de uma subscription específica
+ * Retorna se está ativa, cancelada, e se cancel_at_period_end está definido
+ * Suporta tanto Subscription IDs (sub_xxx) quanto Subscription Item IDs (si_xxx)
+ */
+export async function checkSubscriptionStatus(subscriptionId: string) {
+  try {
+    if (!subscriptionId) {
+      return {
+        exists: false,
+        active: false,
+        cancel_at_period_end: false,
+        current_period_end: null,
+      };
+    }
+
+    let actualSubscriptionId = subscriptionId;
+
+    // Se for um Subscription Item ID (si_xxx), buscar o Subscription ID primeiro
+    if (subscriptionId.startsWith('si_')) {
+      try {
+        const subscriptionItem = await stripe.subscriptionItems.retrieve(subscriptionId);
+        actualSubscriptionId = subscriptionItem.subscription as string;
+      } catch (itemError: any) {
+        // Subscription item não existe (foi deletado)
+        const isResourceMissing = itemError.code === 'resource_missing' ||
+                                   itemError.type === 'invalid_request_error' ||
+                                   itemError.message?.includes('Invalid subscription_item');
+
+        if (isResourceMissing) {
+          console.log(`⚠️ Subscription item ${subscriptionId} não existe mais (deletado)`);
+          return {
+            exists: false,
+            active: false,
+            cancel_at_period_end: false,
+            current_period_end: null,
+          };
+        }
+        throw itemError;
+      }
+    }
+
+    const subscription = await stripe.subscriptions.retrieve(actualSubscriptionId);
+
+    // Pegar current_period_end ou billing_cycle_anchor
+    let periodEnd = (subscription as any).current_period_end;
+    if (!periodEnd) {
+      periodEnd = (subscription as any).billing_cycle_anchor;
+    }
+
+    return {
+      exists: true,
+      active: subscription.status === 'active' || subscription.status === 'trialing',
+      status: subscription.status,
+      cancel_at_period_end: subscription.cancel_at_period_end,
+      current_period_end: periodEnd,
+      canceled_at: (subscription as any).canceled_at,
+      cancel_at: subscription.cancel_at_period_end ? periodEnd : null,
+    };
+  } catch (error: any) {
+    // Se subscription não existir, retornar como não existe
+    if (error?.code === 'resource_missing') {
+      return {
+        exists: false,
+        active: false,
+        cancel_at_period_end: false,
+        current_period_end: null,
+      };
+    }
+    console.error('Erro ao verificar status da subscription:', error);
+    throw error;
+  }
+}
+
+/**
+ * Busca ou cria a subscription principal de InfoZap/IA
+ * Todos os canais são items dentro desta mesma subscription
+ */
+async function getOrCreateMainInfoZapSubscription() {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      throw new Error('Customer ID não configurado');
+    }
+
+    const infozapProductId = 'prod_T9SqvByfpsLwI8';
+    const iaProductId = 'prod_TA8gkanW3rgytK';
+
+    // Buscar subscriptions ativas
+    const subscriptions = await stripe.subscriptions.list({
+      customer: customerId,
+      status: 'active',
+      limit: 100,
+    });
+
+    // Procurar subscription que tenha produtos InfoZap ou IA
+    let mainSubscription = subscriptions.data.find(sub =>
+      sub.items.data.some(item =>
+        item.price.product === infozapProductId || item.price.product === iaProductId
+      )
+    );
+
+    if (mainSubscription) {
+      console.log('✅ Subscription InfoZap/IA existente encontrada:', mainSubscription.id);
+      return mainSubscription;
+    }
+
+    // Não existe - criar nova subscription (vazia, items serão adicionados depois)
+    const customer = await stripe.customers.retrieve(customerId);
+
+    if (customer.deleted) {
+      throw new Error('Customer foi deletado');
+    }
+
+    const defaultPaymentMethod = customer.invoice_settings.default_payment_method;
+
+    if (!defaultPaymentMethod) {
+      throw new Error('Nenhum método de pagamento padrão configurado');
+    }
+
+    // Criar subscription vazia - items serão adicionados depois
+    console.log('⚠️ Criando nova subscription InfoZap/IA...');
+
+    // Não podemos criar subscription sem items, então vamos retornar null
+    // e deixar que addItemToSubscription crie a subscription
+    return null;
+  } catch (error) {
+    console.error('Erro ao buscar/criar subscription InfoZap/IA:', error);
+    throw error;
+  }
+}
+
+/**
+ * Adiciona um item (canal) à subscription de InfoZap/IA
+ * Se não existir subscription, cria uma nova
+ */
+export async function addItemToInfoZapSubscription(params: {
+  priceId: string;
+  metadata?: Record<string, string>;
+}) {
+  try {
+    const customerId = process.env.STRIPE_CUSTOMER_ID;
+
+    if (!customerId) {
+      throw new Error('Customer ID não configurado');
+    }
+
+    // Buscar ou criar subscription principal
+    let subscription = await getOrCreateMainInfoZapSubscription();
+
+    if (!subscription) {
+      // Criar primeira subscription com o primeiro item
+      const customer = await stripe.customers.retrieve(customerId);
+
+      if (customer.deleted) {
+        throw new Error('Customer foi deletado');
+      }
+
+      const defaultPaymentMethod = customer.invoice_settings.default_payment_method;
+
+      if (!defaultPaymentMethod) {
+        throw new Error('Nenhum método de pagamento padrão configurado');
+      }
+
+      subscription = await stripe.subscriptions.create({
+        customer: customerId,
+        items: [{ price: params.priceId, metadata: params.metadata || {} }],
+        default_payment_method: defaultPaymentMethod as string,
+        payment_behavior: 'error_if_incomplete',
+        expand: ['latest_invoice.payment_intent'],
+      });
+
+      console.log('✅ Nova subscription InfoZap/IA criada:', subscription.id);
+    } else {
+      // Adicionar item à subscription existente
+      await stripe.subscriptionItems.create({
+        subscription: subscription.id,
+        price: params.priceId,
+        metadata: params.metadata || {},
+        proration_behavior: 'create_prorations',
+      });
+
+      console.log('✅ Item adicionado à subscription existente:', subscription.id);
+
+      // Recarregar subscription para pegar os novos items
+      subscription = await stripe.subscriptions.retrieve(subscription.id);
+    }
+
+    // Pegar o item recém-criado/adicionado
+    const addedItem = subscription.items.data.find(item => item.price.id === params.priceId);
+
+    if (!addedItem) {
+      throw new Error('Item não encontrado após adicionar');
+    }
+
+    // Pegar current_period_end
+    let periodEnd = (subscription as any).current_period_end;
+
+    if (!periodEnd) {
+      periodEnd = (subscription as any).billing_cycle_anchor;
+      console.log('⚠️ Usando billing_cycle_anchor como current_period_end:', periodEnd);
+    }
+
+    console.log('✅ Item adicionado:', {
+      subscriptionId: subscription.id,
+      subscriptionItemId: addedItem.id,
+      priceId: params.priceId,
+      current_period_end: periodEnd,
+    });
+
+    if (!periodEnd) {
+      console.error('❌ Não foi possível obter current_period_end!');
+      throw new Error('Stripe não retornou data de expiração válida');
+    }
+
+    return {
+      success: true,
+      subscriptionId: addedItem.id, // Retornar o Subscription Item ID (si_xxx)
+      current_period_end: periodEnd
+    };
+  } catch (error) {
+    console.error('Erro ao adicionar item à subscription:', error);
+    throw error;
+  }
+}
+
+/**
+ * @deprecated Use addItemToInfoZapSubscription ao invés
+ * Mantido para compatibilidade
+ */
+export async function createIndividualSubscription(params: {
+  priceId: string;
+  metadata?: Record<string, string>;
+}) {
+  console.warn('⚠️ createIndividualSubscription está deprecated. Use addItemToInfoZapSubscription()');
+  return await addItemToInfoZapSubscription(params);
+}
+
+/**
+ * Remove apenas a IA de um canal (deleta o subscription item da IA)
+ */
+export async function removeIASubscriptionItem(iaSubscriptionItemId: string) {
+  try {
+    if (!iaSubscriptionItemId) {
+      throw new Error('IA Subscription Item ID não fornecido');
+    }
+
+    console.log('🔍 Removendo IA subscription item:', iaSubscriptionItemId);
+
+    // Buscar o subscription item para confirmar que existe
+    const subscriptionItem = await stripe.subscriptionItems.retrieve(iaSubscriptionItemId);
+    const subscriptionId = subscriptionItem.subscription as string;
+
+    // Buscar a subscription para pegar current_period_end e contar items
+    const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+    const currentPeriodEnd = (subscription as any).current_period_end || (subscription as any).billing_cycle_anchor;
+
+    console.log('📅 IA ficará ativa até:', new Date(currentPeriodEnd * 1000).toLocaleString());
+
+    // Contar quantos items existem na subscription
+    const activeItemsCount = subscription.items.data.length;
+    console.log(`📊 Items ativos na subscription: ${activeItemsCount}`);
+
+    // Se for o último item, cancelar a subscription inteira
+    if (activeItemsCount <= 1) {
+      console.log('⚠️ Último item da subscription - cancelando subscription inteira IMEDIATAMENTE');
+
+      // Cancelar imediatamente com proration (gera crédito)
+      await stripe.subscriptions.cancel(subscriptionId, {
+        prorate: true, // Criar crédito proporcional ao tempo não usado
+      });
+
+      console.log('✅ Subscription cancelada imediatamente com crédito proporcional');
+    } else {
+      // Ainda há outros items - deletar apenas este item
+      console.log('ℹ️ Ainda há outros items - deletando apenas IA');
+
+      await stripe.subscriptionItems.del(iaSubscriptionItemId, {
+        proration_behavior: 'create_prorations', // Criar crédito proporcional
+      });
+
+      console.log('✅ IA removida com sucesso. Ativa até:', new Date(currentPeriodEnd * 1000).toLocaleString());
+    }
+
+    return {
+      success: true,
+      will_be_active_until: currentPeriodEnd, // Timestamp Unix de quando vai expirar
+    };
+  } catch (error) {
+    console.error('❌ Erro ao remover IA subscription item:', error);
+    throw error;
+  }
+}
+
+/**
+ * Cancela um canal completo (InfoZap + IA) agendando a remoção para o final do período
+ * Remove os subscription items agendando para o fim do período usando proration_behavior none
+ */
+export async function cancelChannelSubscription(params: {
+  infozapSubscriptionItemId: string;
+  iaSubscriptionItemId?: string;
+}) {
+  try {
+    const { infozapSubscriptionItemId, iaSubscriptionItemId } = params;
+
+    if (!infozapSubscriptionItemId) {
+      throw new Error('InfoZap Subscription Item ID não fornecido');
+    }
+
+    console.log('🔍 [NOVO] Cancelando canal completo (sem schedule):', params);
+
+    // Buscar o subscription item do InfoZap (se ainda existir)
+    let subscriptionId: string;
+    let currentPeriodEnd: number;
+
+    try {
+      const infozapItem = await stripe.subscriptionItems.retrieve(infozapSubscriptionItemId);
+      subscriptionId = infozapItem.subscription as string;
+    } catch (error: any) {
+      // Stripe usa 'type' ao invés de 'code' para alguns erros
+      const isResourceMissing = error.code === 'resource_missing' ||
+                                 error.type === 'invalid_request_error' ||
+                                 error.message?.includes('Invalid subscription_item');
+
+      if (isResourceMissing) {
+        console.log('⚠️ InfoZap subscription item já foi removido anteriormente');
+        // Tentar buscar pela IA se fornecida
+        if (iaSubscriptionItemId) {
+          try {
+            const iaItem = await stripe.subscriptionItems.retrieve(iaSubscriptionItemId);
+            subscriptionId = iaItem.subscription as string;
+          } catch {
+            throw new Error('Ambos subscription items não existem mais');
+          }
+        } else {
+          throw new Error('InfoZap subscription item não existe e IA não foi fornecida');
+        }
+      } else {
+        throw error;
+      }
+    }
+
+    // Buscar a subscription completa
+    const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+    currentPeriodEnd = (subscription as any).current_period_end || (subscription as any).billing_cycle_anchor;
+
+    console.log('📋 Agendando cancelamento para:', new Date(currentPeriodEnd * 1000).toLocaleString());
+
+    // Contar quantos items ativos existem na subscription
+    const activeItemsCount = subscription.items.data.length;
+    console.log(`📊 Items ativos na subscription: ${activeItemsCount}`);
+
+    // Contar quantos items serão removidos
+    let itemsToRemoveCount = 1; // InfoZap sempre
+    if (iaSubscriptionItemId) itemsToRemoveCount++;
+
+    console.log(`🗑️ Items a serem removidos: ${itemsToRemoveCount}`);
+
+    // Se vai remover TODOS os items, cancelar a subscription inteira
+    if (itemsToRemoveCount >= activeItemsCount) {
+      console.log('⚠️ Último(s) item(s) da subscription - cancelando subscription inteira IMEDIATAMENTE');
+
+      // Cancelar imediatamente com proration (gera crédito)
+      await stripe.subscriptions.cancel(subscriptionId, {
+        prorate: true, // Criar crédito proporcional ao tempo não usado
+      });
+
+      console.log('✅ Subscription cancelada imediatamente com crédito proporcional');
+    } else {
+      // Ainda vai sobrar items - deletar items individualmente
+      console.log('ℹ️ Ainda há outros items - deletando items individualmente');
+
+      // Deletar o item do InfoZap imediatamente com crédito proporcional
+      try {
+        await stripe.subscriptionItems.del(infozapSubscriptionItemId, {
+          proration_behavior: 'create_prorations', // Criar crédito proporcional
+        });
+        console.log('✅ InfoZap removido imediatamente com crédito proporcional');
+      } catch (error: any) {
+        const isResourceMissing = error.code === 'resource_missing' ||
+                                   error.type === 'invalid_request_error' ||
+                                   error.message?.includes('Invalid subscription_item');
+
+        if (isResourceMissing) {
+          console.log('⚠️ InfoZap já estava removido');
+        } else {
+          throw error;
+        }
+      }
+
+      // Se tiver IA, deletar também
+      if (iaSubscriptionItemId) {
+        try {
+          await stripe.subscriptionItems.del(iaSubscriptionItemId, {
+            proration_behavior: 'create_prorations', // Criar crédito proporcional
+          });
+          console.log('✅ IA removida imediatamente com crédito proporcional');
+        } catch (error: any) {
+          const isResourceMissing = error.code === 'resource_missing' ||
+                                     error.type === 'invalid_request_error' ||
+                                     error.message?.includes('Invalid subscription_item');
+
+          if (isResourceMissing) {
+            console.log('⚠️ IA já estava removida');
+          } else {
+            throw error;
+          }
+        }
+      }
+    }
+
+    console.log('✅ Canal agendado para cancelamento:', {
+      subscriptionId,
+      cancel_at: currentPeriodEnd,
+      itemsRemoved: {
+        infozap: infozapSubscriptionItemId,
+        ia: iaSubscriptionItemId,
+      },
+    });
+
+    return {
+      success: true,
+      cancel_at: currentPeriodEnd,
+    };
+  } catch (error) {
+    console.error('❌ Erro ao cancelar canal:', error);
+    throw error;
+  }
+}
+
+/**
+ * Reativa um canal cancelado (adiciona novamente o item)
+ */
+export async function reactivateSubscriptionItem(params: {
+  priceId: string;
+  metadata?: Record<string, string>;
+}) {
+  try {
+    // Simplesmente adiciona o item novamente
+    return await addItemToInfoZapSubscription(params);
+  } catch (error) {
+    console.error('❌ Erro ao reativar subscription item:', error);
     throw error;
   }
 }
