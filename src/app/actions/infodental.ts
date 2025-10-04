@@ -117,7 +117,6 @@ export async function createInfoZapChannel(params: {
       infozap_stripe_expiration: params.infozap_stripe_expiration || '',
       assinatura_status: params.assinatura_status || 'acontratar',
     };
-
     console.log('🔍 createInfoZapChannel - Request Body:', JSON.stringify(requestBody, null, 2));
 
     const response = await fetch(INFODENTAL_API_URL, {
