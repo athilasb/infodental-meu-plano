@@ -2196,18 +2196,6 @@ export default function MeuPlano() {
                   </div>
                 </div>
               )}
-
-              <div className="mt-4 grid gap-3 sm:grid-cols-5">
-                <SummaryTile title="Plano" value={money(totals.plan)} note={
-                  plan.periodicidade === "anual" ? `${money(planDiscounted)} / ano` :
-                  plan.periodicidade === "trimestral" ? `${money(planDiscounted)} / 3 meses` :
-                  "Mensal"
-                } />
-                <SummaryTile title="WhatsApp" value={money(totals.whats)} note={`${channels.filter((c) => c.status === "ativo").length} ativos • ${Math.max(0, channels.filter((c) => c.status === "ativo").length - plan.included_whatsapp_slots)} cobrados`} />
-                <SummaryTile title="IA" value={money(totals.ia)} note={`${channels.filter((c) => c.status === "ativo" && c.ia).length} canais com IA`} />
-                <SummaryTile title="BirdID" value={money(totals.bird)} note={`${seats.filter((s) => s.status !== "cancelado").length} seats (${plan.included_birdid_seats} incluído)`} />
-                <SummaryTile title="Storage" value={money(totals.storage)} note={`${STORAGE_PLANS[storagePlan].label} - ${fmtGB(totals.storageGB)}`} />
-              </div>
             </section>
 
             {/* Canais WhatsApp */}
