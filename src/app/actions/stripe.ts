@@ -632,6 +632,7 @@ export async function removeStorageAddon() {
 export async function createSubscription(priceId: string) {
   try {
     const customerId = process.env.STRIPE_CUSTOMER_ID;
+    const instance = process.env.INFODENTAL_INSTANCE;
 
     if (!customerId) {
       throw new Error('Customer ID não configurado');
@@ -674,6 +675,11 @@ export async function createSubscription(priceId: string) {
       default_payment_method: defaultPaymentMethod as string,
       payment_behavior: 'error_if_incomplete', // Cobra imediatamente e retorna erro se falhar
       expand: ['latest_invoice.payment_intent'],
+      metadata: {
+        instance: instance || '',
+        type: 'main_plan',
+        product_id: planProductId
+      }
     });
 
     return { success: true, subscriptionId: subscription.id };
@@ -1276,6 +1282,8 @@ export async function createStorageSubscription(priceId: string) {
     }
 
     // Criar subscription separada com cobrança imediata
+    const instance = process.env.INFODENTAL_INSTANCE;
+
     const subscription = await stripe.subscriptions.create({
       customer: customerId,
       items: [{ price: priceId }],
@@ -1283,6 +1291,7 @@ export async function createStorageSubscription(priceId: string) {
       payment_behavior: 'error_if_incomplete', // Cobra imediatamente e retorna erro se falhar
       expand: ['latest_invoice.payment_intent'],
       metadata: {
+        instance: instance || '',
         type: 'storage',
         product_id: storageProductId
       }
@@ -1563,6 +1572,8 @@ export async function createInfoZapSubscription(priceId: string) {
     }
 
     // Criar subscription separada com cobrança imediata
+    const instance = process.env.INFODENTAL_INSTANCE;
+
     const subscription = await stripe.subscriptions.create({
       customer: customerId,
       items: [{ price: priceId }],
@@ -1570,6 +1581,7 @@ export async function createInfoZapSubscription(priceId: string) {
       payment_behavior: 'error_if_incomplete', // Cobra imediatamente e retorna erro se falhar
       expand: ['latest_invoice.payment_intent'],
       metadata: {
+        instance: instance || '',
         type: 'infozap',
         product_id: infozapProductId
       }
@@ -1858,6 +1870,8 @@ export async function addInfoZapChannel(priceId: string) {
         throw new Error('Nenhum método de pagamento padrão configurado');
       }
 
+      const instance = process.env.INFODENTAL_INSTANCE;
+
       const newSubscription = await stripe.subscriptions.create({
         customer: customerId,
         items: [{ price: priceId, quantity: 1 }],
@@ -1865,6 +1879,7 @@ export async function addInfoZapChannel(priceId: string) {
         payment_behavior: 'error_if_incomplete',
         expand: ['latest_invoice.payment_intent'],
         metadata: {
+          instance: instance || '',
           type: 'infozap',
           product_id: 'prod_T9SqvByfpsLwI8'
         }
@@ -1979,6 +1994,8 @@ export async function addIAChannel(priceId: string) {
         throw new Error('Nenhum método de pagamento padrão configurado');
       }
 
+      const instance = process.env.INFODENTAL_INSTANCE;
+
       const newSubscription = await stripe.subscriptions.create({
         customer: customerId,
         items: [{ price: priceId, quantity: 1 }],
@@ -1986,6 +2003,7 @@ export async function addIAChannel(priceId: string) {
         payment_behavior: 'error_if_incomplete',
         expand: ['latest_invoice.payment_intent'],
         metadata: {
+          instance: instance || '',
           type: 'ia',
           product_id: 'prod_TA8gkanW3rgytK'
         }
@@ -2273,10 +2291,17 @@ export async function addItemToInfoZapSubscription(params: {
 }) {
   try {
     const customerId = process.env.STRIPE_CUSTOMER_ID;
+    const instance = process.env.INFODENTAL_INSTANCE;
 
     if (!customerId) {
       throw new Error('Customer ID não configurado');
     }
+
+    // Adicionar instância aos metadados
+    const metadataWithInstance = {
+      ...(params.metadata || {}),
+      instance: instance || ''
+    };
 
     // Buscar ou criar subscription principal
     let subscription = await getOrCreateMainInfoZapSubscription();
@@ -2297,10 +2322,14 @@ export async function addItemToInfoZapSubscription(params: {
 
       subscription = await stripe.subscriptions.create({
         customer: customerId,
-        items: [{ price: params.priceId, metadata: params.metadata || {} }],
+        items: [{ price: params.priceId, metadata: metadataWithInstance }],
         default_payment_method: defaultPaymentMethod as string,
         payment_behavior: 'error_if_incomplete',
         expand: ['latest_invoice.payment_intent'],
+        metadata: {
+          instance: instance || '',
+          type: 'infozap_ia'
+        }
       });
 
       console.log('✅ Nova subscription InfoZap/IA criada:', subscription.id);
@@ -2309,7 +2338,7 @@ export async function addItemToInfoZapSubscription(params: {
       await stripe.subscriptionItems.create({
         subscription: subscription.id,
         price: params.priceId,
-        metadata: params.metadata || {},
+        metadata: metadataWithInstance,
         proration_behavior: 'create_prorations',
       });
 
